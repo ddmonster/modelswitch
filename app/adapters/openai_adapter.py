@@ -63,6 +63,9 @@ class OpenAIAdapter(BaseAdapter):
                 "timeout": timeout,
                 **standard_params,
             }
+            # 流式请求自动启用 usage 统计
+            if stream and "stream_options" not in create_kwargs:
+                create_kwargs["stream_options"] = {"include_usage": True}
             if extra_body:
                 create_kwargs["extra_body"] = extra_body
             if self.provider.custom_headers:
@@ -71,11 +74,20 @@ class OpenAIAdapter(BaseAdapter):
             response = await self._client.chat.completions.create(**create_kwargs)
 
             if stream:
+                resp_ref = None  # 用于在闭包中引用 AdapterResponse
+
                 async def stream_generator():
                     try:
                         chunk_count = 0
                         async for chunk in response:
                             chunk_count += 1
+                            # 捕获最终 chunk 中的 usage（stream_options.include_usage）
+                            if hasattr(chunk, "usage") and chunk.usage is not None:
+                                if resp_ref is not None:
+                                    resp_ref.usage = {
+                                        "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                                        "completion_tokens": chunk.usage.completion_tokens or 0,
+                                    }
                             yield chunk
                         elapsed = (time.monotonic() - start) * 1000
                         logger.debug(
@@ -91,12 +103,14 @@ class OpenAIAdapter(BaseAdapter):
                         raise
 
                 latency = (time.monotonic() - start) * 1000
-                return AdapterResponse(
+                adapter_resp = AdapterResponse(
                     status_code=200, success=True,
                     stream=stream_generator(),
                     adapter_name=self.name, model_name=model_name,
                     latency_ms=latency,
                 )
+                resp_ref = adapter_resp
+                return adapter_resp
             else:
                 latency = (time.monotonic() - start) * 1000
                 usage = None

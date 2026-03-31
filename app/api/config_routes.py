@@ -254,7 +254,7 @@ async def test_provider(name: str, request: Request):
 
 @router.post("/models/{name}/test")
 async def test_model(name: str, request: Request):
-    """测试模型端到端调用"""
+    """测试模型端到端调用，chain 模式返回每个 adapter 的独立结果"""
     import time
 
     chain_router = request.app.state.chain_router
@@ -262,44 +262,109 @@ async def test_model(name: str, request: Request):
     if not model_config:
         return JSONResponse(status_code=404, content={"error": {"message": f"Model '{name}' not found"}})
 
-    start = time.monotonic()
-    try:
-        result = await chain_router.execute_chat(
-            model=name,
-            messages=[{"role": "user", "content": "Hi"}],
-            stream=False,
-            request_id="test",
-            max_tokens=20,
-        )
-        latency = (time.monotonic() - start) * 1000
+    sorted_refs = sorted(model_config.adapters, key=lambda r: r.priority)
+    providers = chain_router.get_providers()
+    adapters = chain_router.get_adapters()
 
-        if result.success:
-            # Extract response preview
-            preview = ""
-            if result.body:
-                if hasattr(result.body, "choices") and result.body.choices:
-                    msg = result.body.choices[0].message
-                    preview = getattr(msg, "content", "") or ""
-                elif isinstance(result.body, dict):
-                    choices = result.body.get("choices", [])
-                    if choices:
-                        preview = choices[0].get("message", {}).get("content", "")
+    chain_results = []
+    hit_index = -1  # 第一个成功的 adapter 索引
 
-            return {
-                "success": True,
-                "adapter_used": result.adapter_name,
-                "model_name": result.model_name,
-                "latency_ms": round(latency, 0),
-                "usage": result.usage,
-                "preview": preview[:200],
-            }
-        else:
-            return {
+    for i, ref in enumerate(sorted_refs):
+        provider = providers.get(ref.adapter)
+        adapter = adapters.get(ref.adapter)
+
+        # provider 不存在或未启用
+        if not provider or not provider.enabled:
+            chain_results.append({
+                "adapter": ref.adapter,
+                "model_name": ref.model_name,
+                "priority": ref.priority,
                 "success": False,
-                "adapter_used": result.adapter_name,
+                "error": "disabled" if provider else "not found",
+                "latency_ms": 0,
+                "skipped": True,
+            })
+            continue
+
+        if not adapter:
+            chain_results.append({
+                "adapter": ref.adapter,
+                "model_name": ref.model_name,
+                "priority": ref.priority,
+                "success": False,
+                "error": "adapter not found",
+                "latency_ms": 0,
+                "skipped": True,
+            })
+            continue
+
+        start = time.monotonic()
+        try:
+            result = await adapter.chat_completion(
+                model_name=ref.model_name,
+                messages=[{"role": "user", "content": "Hi"}],
+                stream=False,
+                timeout=ref.timeout,
+                request_id="test",
+                max_tokens=20,
+            )
+            latency = (time.monotonic() - start) * 1000
+
+            if result.success:
+                preview = ""
+                if result.body:
+                    if hasattr(result.body, "choices") and result.body.choices:
+                        msg = result.body.choices[0].message
+                        preview = getattr(msg, "content", "") or ""
+                    elif isinstance(result.body, dict):
+                        choices = result.body.get("choices", [])
+                        if choices:
+                            preview = choices[0].get("message", {}).get("content", "")
+
+                entry = {
+                    "adapter": ref.adapter,
+                    "model_name": ref.model_name,
+                    "priority": ref.priority,
+                    "success": True,
+                    "latency_ms": round(latency, 0),
+                    "usage": result.usage,
+                    "preview": preview[:200],
+                }
+                chain_results.append(entry)
+                if hit_index == -1:
+                    hit_index = i
+            else:
+                chain_results.append({
+                    "adapter": ref.adapter,
+                    "model_name": ref.model_name,
+                    "priority": ref.priority,
+                    "success": False,
+                    "latency_ms": round(latency, 0),
+                    "error": result.error,
+                    "status_code": result.status_code,
+                })
+        except Exception as e:
+            latency = (time.monotonic() - start) * 1000
+            chain_results.append({
+                "adapter": ref.adapter,
+                "model_name": ref.model_name,
+                "priority": ref.priority,
+                "success": False,
                 "latency_ms": round(latency, 0),
-                "error": result.error,
-            }
-    except Exception as e:
-        latency = (time.monotonic() - start) * 1000
-        return {"success": False, "latency_ms": round(latency, 0), "error": str(e)}
+                "error": str(e),
+            })
+
+    # 整体结果
+    overall_success = hit_index >= 0
+    hit = chain_results[hit_index] if overall_success else None
+    return {
+        "success": overall_success,
+        "mode": model_config.mode,
+        "adapter_used": hit["adapter"] if hit else "",
+        "model_name": hit["model_name"] if hit else "",
+        "latency_ms": hit["latency_ms"] if hit else 0,
+        "usage": hit.get("usage") if hit else None,
+        "preview": hit.get("preview", "") if hit else "",
+        "error": chain_results[-1].get("error", "") if not overall_success and chain_results else "No adapters",
+        "chain": chain_results,
+    }

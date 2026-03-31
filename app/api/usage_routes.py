@@ -41,10 +41,21 @@ async def get_usage_detail(
     sub_group: str = Query("model"),
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    filter_provider: Optional[str] = None,
+    filter_model: Optional[str] = None,
+    filter_api_key: Optional[str] = None,
 ):
-    """下钻查看子维度明细"""
+    """下钻查看子维度明细，支持多级过滤"""
     tracker = request.app.state.usage_tracker
     today = datetime.now().strftime("%Y-%m-%d")
+
+    extra_filters = {}
+    if filter_provider:
+        extra_filters["provider"] = filter_provider
+    if filter_model:
+        extra_filters["model"] = filter_model
+    if filter_api_key:
+        extra_filters["api_key"] = filter_api_key
 
     result = await tracker.get_detail(
         group_by=group_by,
@@ -52,5 +63,6 @@ async def get_usage_detail(
         sub_group=sub_group,
         date_from=date_from or today,
         date_to=date_to or today,
+        extra_filters=extra_filters,
     )
     return result

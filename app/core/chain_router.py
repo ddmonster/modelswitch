@@ -70,6 +70,9 @@ class ChainRouter:
     def get_providers(self) -> Dict[str, ProviderConfig]:
         return self._providers
 
+    def get_adapters(self) -> Dict[str, BaseAdapter]:
+        return self._adapters
+
     async def execute_chat(
         self,
         model: str,
@@ -312,6 +315,9 @@ class ChainRouter:
                     continue
 
                 if has_sent:
+                    # 流结束后回传 usage（由 adapter stream generator 捕获）
+                    if _adapter_info is not None and result.usage:
+                        _adapter_info["usage"] = result.usage
                     return
 
             except Exception as e:

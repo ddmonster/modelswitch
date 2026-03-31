@@ -182,8 +182,9 @@ class UsageTracker:
         sub_group: str,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        extra_filters: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
-        """下钻查询：查看某个分组下的子维度明细"""
+        """下钻查询：查看某个分组下的子维度明细，支持多级过滤"""
         import aiosqlite
 
         col_map = {"provider": "provider", "model": "model", "api_key": "api_key_alias"}
@@ -191,7 +192,15 @@ class UsageTracker:
         child_col = col_map.get(sub_group, sub_group)
 
         where_clauses = [f"{parent_col} = ?"]
-        params = [item_name]
+        params: list = [item_name]
+
+        # 额外过滤条件（多级下钻用）
+        if extra_filters:
+            for dim, value in extra_filters.items():
+                fc = col_map.get(dim, dim)
+                where_clauses.append(f"{fc} = ?")
+                params.append(value)
+
         if date_from:
             where_clauses.append("timestamp >= ?")
             params.append(f"{date_from}T00:00:00")

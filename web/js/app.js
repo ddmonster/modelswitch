@@ -198,6 +198,16 @@ function removeAdapterRow(index) {
     renderAdapterRows();
 }
 
+function moveAdapterRow(index, direction) {
+    const target = index + direction;
+    if (target < 0 || target >= _adapterRows.length) return;
+    const temp = _adapterRows[index];
+    _adapterRows[index] = _adapterRows[target];
+    _adapterRows[target] = temp;
+    _adapterRows.forEach((r, i) => r.priority = i + 1);
+    renderAdapterRows();
+}
+
 function renderAdapterRows() {
     const container = document.getElementById('mf-adapters-list');
     if (!_adapterRows.length) {
@@ -214,6 +224,10 @@ function renderAdapterRows() {
         return `
         <div class="adapter-form-card">
             <div class="adapter-form-row1">
+                <div class="adapter-form-arrows">
+                    <button class="btn-arrow${i === 0 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="上移">▲</button>
+                    <button class="btn-arrow${i === _adapterRows.length - 1 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, 1)" ${i === _adapterRows.length - 1 ? 'disabled' : ''} title="下移">▼</button>
+                </div>
                 <span class="adapter-form-priority">${row.priority}.</span>
                 <select class="adapter-form-select" onchange="_adapterRows[${i}].adapter=this.value">
                     <option value="">-- 选择供应商 --</option>
@@ -266,18 +280,44 @@ async function deleteModel(name) { if (confirm('确认删除?')) { await api('DE
 async function testModel(name) {
     const el = document.getElementById(`model-test-${name}`);
     el.style.display = 'block';
-    el.innerHTML = '<span class="test-loading">测试中...</span>';
+    el.innerHTML = '<span class="test-loading">测试中（逐个探测 chain 中的适配器）...</span>';
     const result = await api('POST', `/api/config/models/${encodeURIComponent(name)}/test`);
-    if (result.success) {
-        el.innerHTML = `
-            <span class="test-ok">调用成功</span>
-            <span class="test-meta">适配器: ${esc(result.adapter_used)} · 模型: ${esc(result.model_name || '')} · 延迟: ${result.latency_ms}ms</span>
-            ${result.preview ? `<div class="test-preview">"${esc(result.preview)}"</div>` : ''}
-            ${result.usage ? `<span class="test-meta">Token: ${result.usage.prompt_tokens || 0} → ${result.usage.completion_tokens || 0}</span>` : ''}
-        `;
-    } else {
-        el.innerHTML = `<span class="test-fail">调用失败</span> <span class="test-meta">${esc(result.error || '')} · ${result.latency_ms}ms</span>`;
+
+    let html = '';
+
+    // chain 详情表格
+    if (result.chain && result.chain.length > 0) {
+        html += `<table class="usage-table chain-test-table"><tr><th>优先级</th><th>供应商</th><th>模型</th><th>状态</th><th>延迟</th><th>Token</th></tr>`;
+        result.chain.forEach(c => {
+            const isHit = result.success && c.adapter === result.adapter_used && c.success;
+            const statusBadge = c.skipped
+                ? '<span class="badge badge-gray">跳过</span>'
+                : c.success
+                    ? `<span class="badge badge-green">成功${isHit ? ' ✓' : ''}</span>`
+                    : `<span class="badge badge-red">失败</span>`;
+            const tokenStr = c.usage ? `${c.usage.prompt_tokens || 0}→${c.usage.completion_tokens || 0}` : '-';
+            const errorStr = c.error ? `<div class="test-chain-error">${esc(c.error)}</div>` : '';
+            html += `<tr class="${isHit ? 'chain-hit-row' : ''}">
+                <td>P${c.priority}</td>
+                <td>${esc(c.adapter)}</td>
+                <td>${esc(c.model_name)}</td>
+                <td>${statusBadge}${errorStr}</td>
+                <td>${c.latency_ms ? c.latency_ms + 'ms' : '-'}</td>
+                <td>${tokenStr}</td>
+            </tr>`;
+        });
+        html += '</table>';
     }
+
+    // 总结
+    if (result.success) {
+        html = `<span class="test-ok">调用成功</span> <span class="test-meta">命中: ${esc(result.adapter_used)} · 延迟: ${result.latency_ms}ms</span>
+            ${result.preview ? `<div class="test-preview">"${esc(result.preview)}"</div>` : ''}` + html;
+    } else {
+        html = `<span class="test-fail">全部失败</span> <span class="test-meta">${esc(result.error || '')}</span>` + html;
+    }
+
+    el.innerHTML = html;
 }
 
 // ========== API Key 管理 ==========
@@ -379,28 +419,46 @@ async function loadUsage() {
     document.getElementById('usage-detail').style.display = 'none';
 }
 
-async function drillUsage(itemName) {
-    const dimensions = ['provider', 'model', 'api_key'].filter(d => d !== usageState.groupBy);
-    if (!dimensions.length) return;
-    const subGroup = dimensions[0];
+async function drillUsage(topItemName, filters) {
+    // topItemName: 主维度的值（始终不变，如 groupBy=provider 时为 'dashscope'）
+    // filters: 累积的中间维度过滤条件 {model: 'glm-5', ...}
+    filters = filters || {};
+
+    const allDims = ['provider', 'model', 'api_key'];
+    const dimLabel = { provider: '服务商', model: '模型', api_key: 'API Key' };
+    const locked = new Set([usageState.groupBy, ...Object.keys(filters)]);
+    const remaining = allDims.filter(d => !locked.has(d));
+    if (!remaining.length) return;
+    const subGroup = remaining[0];
+    const subLabel = dimLabel[subGroup];
 
     const params = new URLSearchParams({
         group_by: usageState.groupBy, sub_group: subGroup,
         date_from: usageState.dateFrom, date_to: usageState.dateTo,
     });
-    const data = await api('GET', `/api/usage/${encodeURIComponent(itemName)}/detail?${params}`);
+    for (const [dim, val] of Object.entries(filters)) {
+        params.set(`filter_${dim}`, val);
+    }
+    const data = await api('GET', `/api/usage/${encodeURIComponent(topItemName)}/detail?${params}`);
 
+    // 面包屑：主维度 → 中间过滤 → 当前子维度
+    const crumbs = [`${dimLabel[usageState.groupBy]}: ${topItemName}`];
+    for (const [dim, val] of Object.entries(filters)) {
+        crumbs.push(`${dimLabel[dim]}: ${val}`);
+    }
+
+    const canDrillMore = remaining.length > 1;
     const el = document.getElementById('usage-detail');
-    const subLabel = { provider: '服务商', model: '模型', api_key: 'API Key' }[subGroup];
-
     el.innerHTML = `
         <div class="detail-header">
-            <h4>${esc(itemName)} - 按${subLabel}下钻</h4>
-            <button class="btn btn-sm" onclick="this.parentElement.parentElement.style.display='none'">关闭</button>
+            <h4>${crumbs.join(' → ')} → 按${subLabel}下钻</h4>
+            <button class="btn btn-sm" onclick="document.getElementById('usage-detail').style.display='none'">关闭</button>
         </div>
         <table class="usage-table">
-            <tr><th>${subLabel}</th><th>调用量</th><th>成功</th><th>失败</th><th>输入Token</th><th>输出Token</th><th>平均延迟</th></tr>
-            ${data.map(g => `
+            <tr><th>${subLabel}</th><th>调用量</th><th>成功</th><th>失败</th><th>输入Token</th><th>输出Token</th><th>平均延迟</th>${canDrillMore ? '<th></th>' : ''}</tr>
+            ${data.map(g => {
+                const nextFilters = JSON.stringify({...filters, [subGroup]: g.name});
+                return `
                 <tr>
                     <td>${esc(g.name)}</td>
                     <td>${g.total_requests}</td>
@@ -409,8 +467,9 @@ async function drillUsage(itemName) {
                     <td>${formatNum(g.tokens_in)}</td>
                     <td>${formatNum(g.tokens_out)}</td>
                     <td>${g.avg_latency_ms}ms</td>
-                </tr>
-            `).join('')}
+                    ${canDrillMore ? `<td><button class="btn btn-sm drill-btn" onclick='drillUsage(${JSON.stringify(topItemName)}, ${esc(nextFilters)})'>下钻</button></td>` : ''}
+                </tr>`;
+            }).join('')}
         </table>
     `;
     el.style.display = 'block';

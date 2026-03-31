@@ -96,6 +96,12 @@ tr:hover { background: #fafafa; }
 .adapter-form-label { font-size: 11px; color: #999; margin-bottom: 2px; }
 .adapter-form-remove { flex-shrink: 0; }
 
+/* Adapter priority arrows */
+.adapter-form-arrows { display: flex; flex-direction: column; gap: 1px; flex-shrink: 0; }
+.btn-arrow { width: 20px; height: 14px; padding: 0; border: 1px solid #ddd; border-radius: 3px; background: #fff; cursor: pointer; font-size: 8px; line-height: 12px; text-align: center; color: #555; }
+.btn-arrow:hover:not(:disabled) { background: #e3f2fd; border-color: #1565c0; color: #1565c0; }
+.btn-arrow-disabled, .btn-arrow:disabled { opacity: 0.3; cursor: default; }
+
 /* Test button & results */
 .btn-test { color: #1565c0; border-color: #1565c0; }
 .btn-test:hover { background: #1565c0; color: #fff; }
@@ -105,3 +111,10 @@ tr:hover { background: #fafafa; }
 .test-loading { color: #666; }
 .test-meta { color: #888; font-size: 12px; margin-left: 8px; }
 .test-preview { margin-top: 4px; padding: 6px 10px; background: #f5f5f5; border-radius: 4px; font-size: 12px; color: #555; white-space: pre-wrap; max-height: 80px; overflow: hidden; }
+
+/* Chain test results */
+.chain-test-table { margin-top: 8px; font-size: 12px; }
+.chain-test-table th { font-size: 12px; padding: 4px 8px; }
+.chain-test-table td { padding: 4px 8px; }
+.chain-hit-row { background: #e8f5e9 !important; }
+.test-chain-error { font-size: 11px; color: #c62828; margin-top: 2px; word-break: break-all; max-width: 300px; }

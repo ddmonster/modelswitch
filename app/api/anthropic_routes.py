@@ -174,6 +174,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
             if info:
                 result.adapter_name = info.get("name", "")
                 result.latency_ms = info.get("latency", 0.0)
+                if info.get("usage"):
+                    result.usage = info["usage"]
             await _record(request.app.state, request_id, model, result, api_key_alias)
 
     return StreamingResponse(
