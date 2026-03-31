@@ -72,10 +72,12 @@ async def chat_completions(request: Request):
         return await _handle_non_stream(request, chain_router, model, messages, request_id, kwargs)
 
 
-async def _record(app_state, request_id, model, result, api_key_alias):
+async def _record(app_state, request_id, model, result, api_key_alias,
+                  messages=None, stream_output=None):
     """记录用量和日志"""
     from app.utils.tracking import track_request
-    await track_request(app_state, request_id, model, result, api_key_alias)
+    await track_request(app_state, request_id, model, result, api_key_alias,
+                        messages=messages, stream_output=stream_output)
 
 
 async def _handle_non_stream(request, chain_router, model, messages, request_id, kwargs):
@@ -89,7 +91,8 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     )
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-    await _record(request.app.state, request_id, model, result, api_key_alias)
+    await _record(request.app.state, request_id, model, result, api_key_alias,
+                  messages=messages)
 
     if not result.success:
         return JSONResponse(
@@ -142,7 +145,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
 
     if not result.success:
         api_key_alias = getattr(request.state, "api_key_name", "")
-        await _record(request.app.state, request_id, model, result, api_key_alias)
+        await _record(request.app.state, request_id, model, result, api_key_alias,
+                      messages=messages)
 
         async def error_gen():
             yield f"data: {json.dumps({'error': {'message': result.error, 'type': 'upstream_error'}})}\n\n"
@@ -151,6 +155,10 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
 
     adapter_name = result.adapter_name
     api_key_alias = getattr(request.state, "api_key_name", "")
+
+    # 流式输出累积器
+    collected_text = []
+    collected_tool_calls = {}  # index -> {"name": str, "arguments": str}
 
     async def generate():
         try:
@@ -162,6 +170,28 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                         chunk_data = chunk.to_dict()
                     else:
                         chunk_data = str(chunk)
+
+                    # 累积输出内容
+                    if isinstance(chunk_data, dict):
+                        choices = chunk_data.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            if delta.get("content"):
+                                collected_text.append(delta["content"])
+                            for tc in delta.get("tool_calls", []):
+                                idx = tc.get("index", 0)
+                                func = tc.get("function", {})
+                                if idx not in collected_tool_calls:
+                                    collected_tool_calls[idx] = {
+                                        "name": func.get("name", ""),
+                                        "arguments": func.get("arguments", ""),
+                                    }
+                                else:
+                                    if func.get("name"):
+                                        collected_tool_calls[idx]["name"] = func["name"]
+                                    if func.get("arguments"):
+                                        collected_tool_calls[idx]["arguments"] += func["arguments"]
+
                     yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as e:
@@ -174,7 +204,20 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                 result.latency_ms = info.get("latency", 0.0)
                 if info.get("usage"):
                     result.usage = info["usage"]
-            await _record(request.app.state, request_id, model, result, api_key_alias)
+
+            # 构建流式输出摘要
+            stream_output = None
+            parts = []
+            if collected_text:
+                parts.append({"type": "text", "text": "".join(collected_text)})
+            for idx in sorted(collected_tool_calls):
+                tc = collected_tool_calls[idx]
+                parts.append({"type": "tool_use", "name": tc["name"], "arguments": tc["arguments"]})
+            if parts:
+                stream_output = parts
+
+            await _record(request.app.state, request_id, model, result, api_key_alias,
+                          messages=messages, stream_output=stream_output)
 
     return StreamingResponse(
         generate(),

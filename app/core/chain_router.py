@@ -289,6 +289,11 @@ class ChainRouter:
                         cb.record_failure()
                     continue
 
+                # adapter 连接成功，立即记录（即使客户端随后断开也能追踪）
+                if _adapter_info is not None:
+                    _adapter_info["name"] = ref.adapter
+                    _adapter_info["latency"] = result.latency_ms
+
                 # 探测首块
                 first_chunk = None
                 has_sent = False
@@ -298,9 +303,6 @@ class ChainRouter:
                     chunk_count += 1
                     if first_chunk is None:
                         first_chunk = chunk
-                        if _adapter_info is not None:
-                            _adapter_info["name"] = ref.adapter
-                            _adapter_info["latency"] = result.latency_ms
                         logger.debug(
                             f"[{request_id}] adapter={ref.adapter} "
                             f"first_chunk_received latency={result.latency_ms:.0f}ms, stream_locked"

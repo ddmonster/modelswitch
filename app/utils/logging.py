@@ -61,6 +61,20 @@ def setup_logging(log_level: str = "INFO", log_dir: str = "logs",
     file_handler.setFormatter(JSONFormatter())
     root_logger.addHandler(file_handler)
 
+    # 会话日志 logger（专用，不传播到根 logger）
+    conv_logger = logging.getLogger("modelswitch.conversations")
+    conv_logger.setLevel(logging.INFO)
+    conv_logger.propagate = False
+    conv_logger.handlers.clear()
+    conv_handler = RotatingFileHandler(
+        f"{log_dir}/conversations.jsonl",
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    conv_handler.setFormatter(logging.Formatter("%(message)s"))
+    conv_logger.addHandler(conv_handler)
+
 
 def add_log_to_buffer(request_id: str, level: str, message: str, **extra) -> None:
     """添加日志到内存缓冲"""

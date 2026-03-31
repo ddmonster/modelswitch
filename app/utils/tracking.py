@@ -1,6 +1,12 @@
 """Usage tracking and logging helpers for route handlers."""
 from __future__ import annotations
 
+import json
+import logging
+from datetime import datetime
+
+_conv_logger = logging.getLogger("modelswitch.conversations")
+
 
 def _extract_usage(result):
     """从 AdapterResponse 中提取 token 用量"""
@@ -23,7 +29,32 @@ def _extract_usage(result):
     return tokens_in, tokens_out
 
 
-async def track_request(app_state, request_id, model, result, api_key_alias=""):
+def _extract_output(result):
+    """从 AdapterResponse 中提取输出内容（非流式）"""
+    if not result.success or not result.body:
+        return None
+    body = result.body
+    if hasattr(body, "model_dump"):
+        body = body.model_dump(exclude_none=True)
+    elif not isinstance(body, dict):
+        return None
+    choices = body.get("choices", [])
+    if not choices:
+        return None
+    msg = choices[0].get("message", {})
+    parts = []
+    if msg.get("content"):
+        parts.append({"type": "text", "text": msg["content"]})
+    for tc in msg.get("tool_calls", []):
+        func = tc.get("function", {})
+        parts.append({"type": "tool_use", "name": func.get("name", ""), "arguments": func.get("arguments", "")})
+    return parts or None
+
+
+async def track_request(
+    app_state, request_id, model, result, api_key_alias="",
+    messages=None, stream_output=None,
+):
     """记录请求的用量统计和日志。在路由处理完成后调用。"""
     from app.utils.logging import add_log_to_buffer
 
@@ -53,3 +84,26 @@ async def track_request(app_state, request_id, model, result, api_key_alias=""):
         f"tokens={tokens_in}+{tokens_out}"
     )
     add_log_to_buffer(request_id, level, msg, api_key=api_key_alias)
+
+    # 写入会话日志（conversations.jsonl）
+    if messages is not None:
+        output = stream_output if stream_output is not None else _extract_output(result)
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "request_id": request_id,
+            "model": model,
+            "adapter": provider,
+            "api_key": api_key_alias,
+            "success": result.success,
+            "latency_ms": round(latency),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "messages": messages,
+            "output": output,
+        }
+        if not result.success:
+            record["error"] = result.error
+        try:
+            _conv_logger.info(json.dumps(record, ensure_ascii=False))
+        except Exception:
+            pass
