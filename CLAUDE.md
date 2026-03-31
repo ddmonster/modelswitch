@@ -60,7 +60,7 @@ Client → GatewayMiddleware (auth/rate-limit) → Route Handler → ChainRouter
 
 | Component | Purpose |
 |---|---|
-| `chain_router.py` | Routes requests to adapters. Chain mode does first-chunk probe for streaming fallback. |
+| `chain_router.py` | Routes requests to adapters. Chain mode does first-chunk probe for streaming fallback. Uses `_adapter_info` dict to pass adapter name/latency/usage from stream generator to caller. |
 | `circuit_breaker.py` | Per-provider circuit breaker: 5 failures → 30s open → half-open probe |
 | `middleware.py` | Pure ASGI middleware (NOT BaseHTTPMiddleware — that causes infinite recursion). Auth, rate limiting, CORS. |
 | `config_watcher.py` | watchdog-based hot reload with 2s debounce |
@@ -72,6 +72,8 @@ Client → GatewayMiddleware (auth/rate-limit) → Route Handler → ChainRouter
 ### Adapter Layer (`app/adapters/`)
 
 `LiteLLMAdapter` wraps `litellm.acompletion()`. Model names are prefixed with the provider type: `openai/glm-5`, `anthropic/claude-sonnet-4-20250514`. Returns `AdapterResponse` dataclass with `body` (non-stream) or `stream` (async generator).
+
+Streaming usage: OpenAI adapter sets `stream_options: {include_usage: true}` to capture token counts from the final chunk. Usage is stored in `AdapterResponse.usage` after stream completes.
 
 ### Protocol Conversion (`app/utils/message_converter.py`)
 
@@ -96,6 +98,8 @@ Bidirectional conversion between Anthropic and OpenAI formats:
 ### Request Tracking (`app/utils/tracking.py`)
 
 Centralized `track_request()` called from both route files after chain_router returns. Records usage stats (via `usage_tracker.record()`) and debug logs (via `add_log_to_buffer()`).
+
+For streaming: `chain_router._execute_chat_stream` populates `_adapter_info` dict with adapter name, latency, and usage. Route handlers read this in the `finally` block after stream consumption and set on `result` before tracking.
 
 ### Persistence
 
