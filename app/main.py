@@ -182,6 +182,7 @@ from app.api.config_routes import router as config_router
 from app.api.api_key_routes import router as api_key_router
 from app.api.usage_routes import router as usage_router
 from app.api.log_routes import router as log_router
+from app.api.conversation_routes import router as conversation_router
 
 app.include_router(openai_router)
 app.include_router(anthropic_router)
@@ -189,6 +190,7 @@ app.include_router(config_router)
 app.include_router(api_key_router)
 app.include_router(usage_router)
 app.include_router(log_router)
+app.include_router(conversation_router)
 
 
 # ========== 前端静态文件 ==========

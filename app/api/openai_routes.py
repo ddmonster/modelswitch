@@ -59,12 +59,15 @@ async def chat_completions(request: Request):
 
     request_id = getattr(request.state, "request_id", "")
 
-    # 提取额外参数
+    # 提取额外参数（跳过空列表/空字典，如 tools: [] 会被上游拒绝）
     kwargs = {}
     for key in ("temperature", "top_p", "max_tokens", "stop", "presence_penalty",
                 "frequency_penalty", "user", "tools", "tool_choice", "response_format"):
         if key in body:
-            kwargs[key] = body[key]
+            val = body[key]
+            if val is None or (isinstance(val, (list, dict)) and not val):
+                continue
+            kwargs[key] = val
 
     if stream:
         return await _handle_stream(request, chain_router, model, messages, request_id, kwargs)

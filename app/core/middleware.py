@@ -213,6 +213,8 @@ class GatewayMiddleware:
             return True
         if path.startswith("/api/keys"):
             return True
+        if path.startswith("/api/conversations"):
+            return True
         return False
 
     def _add_cors_headers(self, response: Response) -> None:

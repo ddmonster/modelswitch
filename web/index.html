@@ -9,91 +9,96 @@
 <body>
     <div class="header">
         <h1>ModelSwitch Gateway</h1>
+        <div class="lang-switcher">
+            <button class="lang-btn active" data-lang="zh" onclick="setLocale('zh')">中文</button>
+            <button class="lang-btn" data-lang="en" onclick="setLocale('en')">EN</button>
+        </div>
     </div>
     <div class="tabs">
-        <button class="tab active" onclick="switchTab('providers')">供应商管理</button>
-        <button class="tab" onclick="switchTab('models')">模型配置</button>
-        <button class="tab" onclick="switchTab('keys')">API Key</button>
-        <button class="tab" onclick="switchTab('usage')">用量统计</button>
-        <button class="tab" onclick="switchTab('logs')">调试日志</button>
+        <button class="tab active" onclick="switchTab('providers')" data-i18n="tab.providers">供应商管理</button>
+        <button class="tab" onclick="switchTab('models')" data-i18n="tab.models">模型配置</button>
+        <button class="tab" onclick="switchTab('keys')" data-i18n="tab.keys">API Key</button>
+        <button class="tab" onclick="switchTab('usage')" data-i18n="tab.usage">用量统计</button>
+        <button class="tab" onclick="switchTab('logs')" data-i18n="tab.logs">调试日志</button>
+        <button class="tab" onclick="switchTab('conversations')" data-i18n="tab.conversations">对话记录</button>
     </div>
 
-    <!-- Tab: 供应商管理 -->
+    <!-- Tab: Providers -->
     <div id="tab-providers" class="tab-content active">
         <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddProvider()">+ 新建供应商</button>
-            <button class="btn" onclick="loadConfig()">刷新</button>
+            <button class="btn btn-primary" onclick="showAddProvider()" data-i18n="provider.add">+ 新建供应商</button>
+            <button class="btn" onclick="loadConfig()" data-i18n="common.refresh">刷新</button>
         </div>
         <div id="providers-list"></div>
         <div id="provider-form" class="modal" style="display:none">
             <div class="modal-content">
-                <h3 id="provider-form-title">新建供应商</h3>
+                <h3 id="provider-form-title" data-i18n="provider.formTitle.add">新建供应商</h3>
                 <input type="hidden" id="pf-original-name">
                 <div class="form-group">
-                    <label>名称</label>
-                    <input id="pf-name" placeholder="如 dashscope">
+                    <label data-i18n="provider.label.name">名称</label>
+                    <input id="pf-name" data-i18n-placeholder="provider.ph.name" placeholder="如 dashscope">
                 </div>
                 <div class="form-group">
-                    <label>协议类型</label>
+                    <label data-i18n="provider.label.protocol">协议类型</label>
                     <select id="pf-provider">
-                        <option value="openai">OpenAI 兼容</option>
-                        <option value="anthropic">Anthropic</option>
+                        <option value="openai" data-i18n="provider.option.openai">OpenAI 兼容</option>
+                        <option value="anthropic" data-i18n="provider.option.anthropic">Anthropic</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>Base URL</label>
+                    <label data-i18n="provider.label.baseUrl">Base URL</label>
                     <input id="pf-base-url" placeholder="https://api.example.com/v1">
                 </div>
                 <div class="form-group">
-                    <label>API Key</label>
-                    <input id="pf-api-key" type="password" placeholder="${ENV_VAR} 或直接填入">
+                    <label data-i18n="provider.label.apiKey">API Key</label>
+                    <input id="pf-api-key" type="password" data-i18n-placeholder="provider.ph.apiKey" placeholder="${ENV_VAR} 或直接填入">
                 </div>
                 <div class="form-group">
-                    <label>自定义 Headers (JSON)</label>
+                    <label data-i18n="provider.label.headers">自定义 Headers (JSON)</label>
                     <textarea id="pf-headers" rows="2" placeholder='{"X-Custom": "value"}'>{}</textarea>
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-primary" onclick="saveProvider()">保存</button>
-                    <button class="btn" onclick="hideProviderForm()">取消</button>
+                    <button class="btn btn-primary" onclick="saveProvider()" data-i18n="common.save">保存</button>
+                    <button class="btn" onclick="hideProviderForm()" data-i18n="common.cancel">取消</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Tab: 模型配置 -->
+    <!-- Tab: Models -->
     <div id="tab-models" class="tab-content">
         <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddModel()">+ 新建模型</button>
-            <button class="btn" onclick="loadConfig()">刷新</button>
+            <button class="btn btn-primary" onclick="showAddModel()" data-i18n="model.add">+ 新建模型</button>
+            <button class="btn" onclick="loadConfig()" data-i18n="common.refresh">刷新</button>
         </div>
         <div id="models-list"></div>
         <div id="model-form" class="modal" style="display:none">
             <div class="modal-content">
-                <h3 id="model-form-title">新建模型</h3>
+                <h3 id="model-form-title" data-i18n="model.formTitle.add">新建模型</h3>
                 <input type="hidden" id="mf-original-name">
                 <div class="form-group">
-                    <label>模型名称</label>
-                    <input id="mf-name" placeholder="如 glm5">
+                    <label data-i18n="model.label.name">模型名称</label>
+                    <input id="mf-name" data-i18n-placeholder="model.ph.name" placeholder="如 glm5">
                 </div>
                 <div class="form-group">
-                    <label>调用模式</label>
+                    <label data-i18n="model.label.mode">调用模式</label>
                     <select id="mf-mode">
-                        <option value="chain">Chain (fallback 链)</option>
-                        <option value="adapter">Adapter (直接调用)</option>
+                        <option value="chain" data-i18n="model.option.chain">Chain (fallback 链)</option>
+                        <option value="adapter" data-i18n="model.option.adapter">Adapter (直接调用)</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label>描述</label>
-                    <input id="mf-description" placeholder="模型描述">
+                    <label data-i18n="model.label.description">描述</label>
+                    <input id="mf-description" data-i18n-placeholder="model.ph.description" placeholder="模型描述">
                 </div>
                 <div class="form-group">
-                    <label>适配器列表</label>
+                    <label data-i18n="model.label.adapters">适配器列表</label>
                     <div id="mf-adapters-list"></div>
-                    <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addAdapterRow()">+ 添加适配器</button>
+                    <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addAdapterRow()" data-i18n="adapter.add">+ 添加适配器</button>
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-primary" onclick="saveModel()">保存</button>
-                    <button class="btn" onclick="hideModelForm()">取消</button>
+                    <button class="btn btn-primary" onclick="saveModel()" data-i18n="common.save">保存</button>
+                    <button class="btn" onclick="hideModelForm()" data-i18n="common.cancel">取消</button>
                 </div>
             </div>
         </div>
@@ -102,103 +107,137 @@
     <!-- Tab: API Key -->
     <div id="tab-keys" class="tab-content">
         <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddKey()">+ 新建 Key</button>
-            <button class="btn" onclick="loadKeys()">刷新</button>
+            <button class="btn btn-primary" onclick="showAddKey()" data-i18n="key.add">+ 新建 Key</button>
+            <button class="btn" onclick="loadKeys()" data-i18n="common.refresh">刷新</button>
         </div>
         <div id="keys-list"></div>
         <div id="key-form" class="modal" style="display:none">
             <div class="modal-content">
-                <h3>新建 API Key</h3>
+                <h3 data-i18n="key.formTitle">新建 API Key</h3>
                 <div class="form-group">
-                    <label>名称</label>
-                    <input id="kf-name" placeholder="如 张三">
+                    <label data-i18n="key.label.name">名称</label>
+                    <input id="kf-name" data-i18n-placeholder="key.ph.name" placeholder="如 张三">
                 </div>
                 <div class="form-group">
-                    <label>描述</label>
-                    <input id="kf-description" placeholder="用途说明">
+                    <label data-i18n="key.label.description">描述</label>
+                    <input id="kf-description" data-i18n-placeholder="key.ph.description" placeholder="用途说明">
                 </div>
                 <div class="form-group">
-                    <label>每分钟限流</label>
+                    <label data-i18n="key.label.rateLimit">每分钟限流</label>
                     <input id="kf-rate-limit" type="number" value="60" min="0">
                 </div>
                 <div class="form-group">
-                    <label>每日限流 (0=不限)</label>
+                    <label data-i18n="key.label.dailyLimit">每日限流 (0=不限)</label>
                     <input id="kf-daily-limit" type="number" value="0" min="0">
                 </div>
                 <div class="form-group">
-                    <label>允许的模型 (逗号分隔，空=全部)</label>
+                    <label data-i18n="key.label.allowedModels">允许的模型 (逗号分隔，空=全部)</label>
                     <input id="kf-allowed-models" placeholder="glm5, gpt4o">
                 </div>
                 <div class="form-actions">
-                    <button class="btn btn-primary" onclick="createKey()">创建</button>
-                    <button class="btn" onclick="hideKeyForm()">取消</button>
+                    <button class="btn btn-primary" onclick="createKey()" data-i18n="common.create">创建</button>
+                    <button class="btn" onclick="hideKeyForm()" data-i18n="common.cancel">取消</button>
                 </div>
             </div>
         </div>
         <div id="new-key-result" class="modal" style="display:none">
             <div class="modal-content">
-                <h3>API Key 创建成功</h3>
-                <p class="warning">请立即保存此 Key，关闭后无法再次查看</p>
+                <h3 data-i18n="key.created.title">API Key 创建成功</h3>
+                <p class="warning" data-i18n="key.created.warning">请立即保存此 Key，关闭后无法再次查看</p>
                 <div class="key-display">
                     <input id="new-key-value" readonly>
-                    <button class="btn" onclick="copyKey()">复制</button>
+                    <button class="btn" onclick="copyKey()" data-i18n="common.copy">复制</button>
                 </div>
                 <div class="form-actions">
-                    <button class="btn" onclick="document.getElementById('new-key-result').style.display='none'">关闭</button>
+                    <button class="btn" onclick="document.getElementById('new-key-result').style.display='none'" data-i18n="common.close">关闭</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Tab: 用量统计 -->
+    <!-- Tab: Usage -->
     <div id="tab-usage" class="tab-content">
         <div class="toolbar">
-            <label>主维度：
+            <label><span data-i18n="usage.label.dimension">主维度：</span>
                 <select id="usage-group-by" onchange="loadUsage()">
-                    <option value="provider">模型服务商</option>
-                    <option value="model">模型</option>
-                    <option value="api_key">API Key</option>
+                    <option value="provider" data-i18n="usage.dim.provider">模型服务商</option>
+                    <option value="model" data-i18n="usage.dim.model">模型</option>
+                    <option value="api_key" data-i18n="usage.dim.apiKey">API Key</option>
                 </select>
             </label>
-            <label>日期：
+            <label><span data-i18n="usage.label.date">日期：</span>
                 <select id="usage-date" onchange="loadUsage()">
-                    <option value="today">今日</option>
-                    <option value="week">本周</option>
-                    <option value="month">本月</option>
+                    <option value="today" data-i18n="usage.date.today">今日</option>
+                    <option value="week" data-i18n="usage.date.week">本周</option>
+                    <option value="month" data-i18n="usage.date.month">本月</option>
                 </select>
             </label>
-            <button class="btn" onclick="loadUsage()">刷新</button>
+            <button class="btn" onclick="loadUsage()" data-i18n="common.refresh">刷新</button>
         </div>
         <div id="usage-summary"></div>
         <div id="usage-detail" style="display:none"></div>
     </div>
 
-    <!-- Tab: 调试日志 -->
+    <!-- Tab: Logs -->
     <div id="tab-logs" class="tab-content">
         <div class="toolbar">
-            <label>级别：
+            <label><span data-i18n="log.label.level">级别：</span>
                 <select id="log-level" onchange="loadLogs()">
-                    <option value="">全部</option>
+                    <option value="" data-i18n="common.all">全部</option>
                     <option value="DEBUG">DEBUG</option>
                     <option value="INFO">INFO</option>
                     <option value="WARNING">WARNING</option>
                     <option value="ERROR">ERROR</option>
                 </select>
             </label>
-            <label>Request ID：
-                <input id="log-request-id" placeholder="过滤" style="width:120px">
+            <label><span data-i18n="log.label.requestId">Request ID：</span>
+                <input id="log-request-id" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px">
             </label>
-            <label>API Key：
-                <input id="log-api-key" placeholder="过滤" style="width:120px">
+            <label><span data-i18n="log.label.apiKey">API Key：</span>
+                <input id="log-api-key" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px">
             </label>
-            <button class="btn" onclick="loadLogs()">刷新</button>
+            <button class="btn" onclick="loadLogs()" data-i18n="common.refresh">刷新</button>
             <label>
-                <input type="checkbox" id="log-auto-refresh"> 自动刷新
+                <input type="checkbox" id="log-auto-refresh"> <span data-i18n="log.label.autoRefresh">自动刷新</span>
             </label>
         </div>
         <div id="log-container" class="log-viewer"></div>
     </div>
 
+    <!-- Tab: Conversations -->
+    <div id="tab-conversations" class="tab-content" style="max-width: 100%;">
+        <div class="toolbar">
+            <label><span data-i18n="conv.label.apiKey">API Key：</span>
+                <select id="conv-api-key" onchange="loadConversations()">
+                    <option value="" data-i18n="common.all">全部</option>
+                </select>
+            </label>
+            <label><span data-i18n="conv.label.model">模型：</span>
+                <select id="conv-model" onchange="loadConversations()">
+                    <option value="" data-i18n="common.all">全部</option>
+                </select>
+            </label>
+            <label><span data-i18n="conv.label.status">状态：</span>
+                <select id="conv-success" onchange="loadConversations()">
+                    <option value="" data-i18n="common.all">全部</option>
+                    <option value="true" data-i18n="common.success">成功</option>
+                    <option value="false" data-i18n="common.failed">失败</option>
+                </select>
+            </label>
+            <button class="btn" onclick="loadConversations()" data-i18n="common.refresh">刷新</button>
+        </div>
+        <div class="conv-layout">
+            <div class="conv-list-panel">
+                <div id="conv-list"></div>
+                <div id="conv-pagination" class="conv-pagination"></div>
+            </div>
+            <div class="conv-detail-panel" id="conv-detail">
+                <div class="conv-detail-empty" data-i18n="conv.detail.empty">点击左侧对话记录查看详情</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/web/js/i18n.js"></script>
     <script src="/web/js/app.js"></script>
 </body>
 </html>

@@ -35,7 +35,8 @@ async def messages(request: Request):
     messages_list = openai_body.pop("messages", [])
 
     kwargs = {k: v for k, v in openai_body.items()
-              if v is not None and k not in ("model", "messages", "stream")}
+              if v is not None and k not in ("model", "messages", "stream")
+              and not (isinstance(v, (list, dict)) and not v)}
 
     if stream:
         return await _handle_stream(request, chain_router, model, messages_list, request_id, kwargs)

@@ -5,14 +5,14 @@ function switchTab(name) {
     document.querySelector(`[onclick="switchTab('${name}')"]`).classList.add('active');
     document.getElementById(`tab-${name}`).classList.add('active');
 
-    // 加载数据
     if (name === 'providers' || name === 'models') loadConfig();
     if (name === 'keys') loadKeys();
     if (name === 'usage') loadUsage();
     if (name === 'logs') loadLogs();
+    if (name === 'conversations') loadConversations();
 }
 
-// ========== API 辅助 ==========
+// ========== API helper ==========
 async function api(method, path, body) {
     const opts = { method, headers: { 'Content-Type': 'application/json' } };
     if (body) opts.body = JSON.stringify(body);
@@ -20,11 +20,11 @@ async function api(method, path, body) {
     return resp.json();
 }
 
-// ========== 全局状态 ==========
-let _currentProviders = [];  // 用于 adapter 下拉框
-let _adapterRows = [];       // 当前 model form 中的 adapter 列表
+// ========== Global state ==========
+let _currentProviders = [];
+let _adapterRows = [];
 
-// ========== 供应商管理 ==========
+// ========== Providers ==========
 async function loadConfig() {
     const config = await api('GET', '/api/config');
     _currentProviders = config.providers || [];
@@ -34,26 +34,26 @@ async function loadConfig() {
 
 function renderProviders(providers) {
     const el = document.getElementById('providers-list');
-    if (!providers.length) { el.innerHTML = '<p style="color:#999">暂无供应商配置</p>'; return; }
+    if (!providers.length) { el.innerHTML = `<p style="color:#999">${t('provider.empty')}</p>`; return; }
     el.innerHTML = providers.map(p => `
         <div class="card" id="provider-card-${esc(p.name)}">
             <div class="card-header">
                 <span class="card-title">${esc(p.name)}</span>
-                <span class="badge ${p.enabled ? 'badge-green' : 'badge-red'}">${p.enabled ? '启用' : '禁用'}</span>
+                <span class="badge ${p.enabled ? 'badge-green' : 'badge-red'}">${p.enabled ? t('common.enabled') : t('common.disabled')}</span>
             </div>
             <div class="card-body">
                 <table>
-                    <tr><td>协议</td><td><span class="badge badge-blue">${esc(p.provider)}</span></td></tr>
+                    <tr><td>${t('provider.td.protocol')}</td><td><span class="badge badge-blue">${esc(p.provider)}</span></td></tr>
                     <tr><td>Base URL</td><td>${esc(p.base_url)}</td></tr>
                     <tr><td>API Key</td><td>${esc(p.api_key).substring(0, 12)}***</td></tr>
                     ${p.custom_headers && Object.keys(p.custom_headers).length ? `<tr><td>Headers</td><td>${esc(JSON.stringify(p.custom_headers))}</td></tr>` : ''}
                 </table>
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="editProvider('${esc(p.name)}')">编辑</button>
-                <button class="btn btn-sm btn-test" onclick="testProvider('${esc(p.name)}')">测试连通</button>
-                <button class="btn btn-sm ${p.enabled ? 'btn-danger' : ''}" onclick="toggleProvider('${esc(p.name)}')">${p.enabled ? '禁用' : '启用'}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteProvider('${esc(p.name)}')">删除</button>
+                <button class="btn btn-sm" onclick="editProvider('${esc(p.name)}')">${t('common.edit')}</button>
+                <button class="btn btn-sm btn-test" onclick="testProvider('${esc(p.name)}')">${t('provider.btn.test')}</button>
+                <button class="btn btn-sm ${p.enabled ? 'btn-danger' : ''}" onclick="toggleProvider('${esc(p.name)}')">${p.enabled ? t('common.disable') : t('common.enable')}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteProvider('${esc(p.name)}')">${t('common.delete')}</button>
             </div>
             <div id="provider-test-${esc(p.name)}" class="test-result" style="display:none"></div>
         </div>
@@ -61,7 +61,7 @@ function renderProviders(providers) {
 }
 
 function showAddProvider() {
-    document.getElementById('provider-form-title').textContent = '新建供应商';
+    document.getElementById('provider-form-title').textContent = t('provider.formTitle.add');
     document.getElementById('pf-original-name').value = '';
     document.getElementById('pf-name').value = '';
     document.getElementById('pf-provider').value = 'openai';
@@ -75,7 +75,7 @@ function editProvider(name) {
     api('GET', '/api/config').then(config => {
         const p = (config.providers || []).find(x => x.name === name);
         if (!p) return;
-        document.getElementById('provider-form-title').textContent = '编辑供应商';
+        document.getElementById('provider-form-title').textContent = t('provider.formTitle.edit');
         document.getElementById('pf-original-name').value = name;
         document.getElementById('pf-name').value = p.name;
         document.getElementById('pf-provider').value = p.provider;
@@ -91,9 +91,9 @@ function hideProviderForm() { document.getElementById('provider-form').style.dis
 async function saveProvider() {
     const original = document.getElementById('pf-original-name').value;
     const name = document.getElementById('pf-name').value.trim();
-    if (!name) return alert('请填写名称');
+    if (!name) return alert(t('provider.validation.nameRequired'));
     let headers = {};
-    try { headers = JSON.parse(document.getElementById('pf-headers').value || '{}'); } catch(e) { return alert('Headers JSON 格式错误'); }
+    try { headers = JSON.parse(document.getElementById('pf-headers').value || '{}'); } catch(e) { return alert(t('provider.validation.headersJson')); }
 
     const body = {
         name, provider: document.getElementById('pf-provider').value,
@@ -111,26 +111,26 @@ async function saveProvider() {
 }
 
 async function toggleProvider(name) { await api('PATCH', `/api/config/providers/${encodeURIComponent(name)}/toggle`); loadConfig(); }
-async function deleteProvider(name) { if (confirm('确认删除?')) { await api('DELETE', `/api/config/providers/${encodeURIComponent(name)}`); loadConfig(); } }
+async function deleteProvider(name) { if (confirm(t('common.confirmDelete'))) { await api('DELETE', `/api/config/providers/${encodeURIComponent(name)}`); loadConfig(); } }
 
-// ========== 供应商测试 ==========
+// ========== Provider test ==========
 async function testProvider(name) {
     const el = document.getElementById(`provider-test-${name}`);
     el.style.display = 'block';
-    el.innerHTML = '<span class="test-loading">测试中...</span>';
+    el.innerHTML = `<span class="test-loading">${t('provider.test.testing')}</span>`;
     const result = await api('POST', `/api/config/providers/${encodeURIComponent(name)}/test`);
     if (result.success) {
-        el.innerHTML = `<span class="test-ok">连通成功</span> <span class="test-meta">状态: ${result.status_code || 'OK'} · 延迟: ${result.latency_ms}ms</span>`;
+        el.innerHTML = `<span class="test-ok">${t('provider.test.success')}</span> <span class="test-meta">${t('provider.test.status')}: ${result.status_code || 'OK'} · ${t('provider.test.latency')}: ${result.latency_ms}ms</span>`;
     } else {
-        el.innerHTML = `<span class="test-fail">连通失败</span> <span class="test-meta">${esc(result.error || '')}</span>`;
+        el.innerHTML = `<span class="test-fail">${t('provider.test.fail')}</span> <span class="test-meta">${esc(result.error || '')}</span>`;
     }
 }
 
-// ========== 模型配置 ==========
+// ========== Models ==========
 function renderModels(models) {
     const el = document.getElementById('models-list');
     const entries = Object.entries(models);
-    if (!entries.length) { el.innerHTML = '<p style="color:#999">暂无模型配置</p>'; return; }
+    if (!entries.length) { el.innerHTML = `<p style="color:#999">${t('model.empty')}</p>`; return; }
     el.innerHTML = entries.map(([name, m]) => `
         <div class="card" id="model-card-${esc(name)}">
             <div class="card-header">
@@ -148,9 +148,9 @@ function renderModels(models) {
                 `).join('')}
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="editModel('${esc(name)}')">编辑</button>
-                <button class="btn btn-sm btn-test" onclick="testModel('${esc(name)}')">测试调用</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteModel('${esc(name)}')">删除</button>
+                <button class="btn btn-sm" onclick="editModel('${esc(name)}')">${t('common.edit')}</button>
+                <button class="btn btn-sm btn-test" onclick="testModel('${esc(name)}')">${t('model.btn.test')}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteModel('${esc(name)}')">${t('common.delete')}</button>
             </div>
             <div id="model-test-${esc(name)}" class="test-result" style="display:none"></div>
         </div>
@@ -158,7 +158,7 @@ function renderModels(models) {
 }
 
 function showAddModel() {
-    document.getElementById('model-form-title').textContent = '新建模型';
+    document.getElementById('model-form-title').textContent = t('model.formTitle.add');
     document.getElementById('mf-original-name').value = '';
     document.getElementById('mf-name').value = '';
     document.getElementById('mf-mode').value = 'chain';
@@ -172,7 +172,7 @@ function editModel(name) {
     api('GET', '/api/config').then(config => {
         const m = config.models[name];
         if (!m) return;
-        document.getElementById('model-form-title').textContent = '编辑模型';
+        document.getElementById('model-form-title').textContent = t('model.formTitle.edit');
         document.getElementById('mf-original-name').value = name;
         document.getElementById('mf-name').value = name;
         document.getElementById('mf-mode').value = m.mode;
@@ -185,7 +185,7 @@ function editModel(name) {
 
 function hideModelForm() { document.getElementById('model-form').style.display = 'none'; }
 
-// ========== 适配器列表动态编辑 ==========
+// ========== Adapter rows ==========
 function addAdapterRow() {
     _adapterRows.push({ adapter: '', model_name: '', priority: _adapterRows.length + 1, timeout: 60 });
     renderAdapterRows();
@@ -193,7 +193,6 @@ function addAdapterRow() {
 
 function removeAdapterRow(index) {
     _adapterRows.splice(index, 1);
-    // 重新编号 priority
     _adapterRows.forEach((r, i) => r.priority = i + 1);
     renderAdapterRows();
 }
@@ -211,7 +210,7 @@ function moveAdapterRow(index, direction) {
 function renderAdapterRows() {
     const container = document.getElementById('mf-adapters-list');
     if (!_adapterRows.length) {
-        container.innerHTML = '<p style="color:#999;font-size:13px">暂无适配器，点击下方按钮添加</p>';
+        container.innerHTML = `<p style="color:#999;font-size:13px">${t('adapter.empty')}</p>`;
         return;
     }
 
@@ -225,25 +224,25 @@ function renderAdapterRows() {
         <div class="adapter-form-card">
             <div class="adapter-form-row1">
                 <div class="adapter-form-arrows">
-                    <button class="btn-arrow${i === 0 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, -1)" ${i === 0 ? 'disabled' : ''} title="上移">▲</button>
-                    <button class="btn-arrow${i === _adapterRows.length - 1 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, 1)" ${i === _adapterRows.length - 1 ? 'disabled' : ''} title="下移">▼</button>
+                    <button class="btn-arrow${i === 0 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, -1)" ${i === 0 ? 'disabled' : ''}>▲</button>
+                    <button class="btn-arrow${i === _adapterRows.length - 1 ? ' btn-arrow-disabled' : ''}" onclick="moveAdapterRow(${i}, 1)" ${i === _adapterRows.length - 1 ? 'disabled' : ''}>▼</button>
                 </div>
                 <span class="adapter-form-priority">${row.priority}.</span>
                 <select class="adapter-form-select" onchange="_adapterRows[${i}].adapter=this.value">
-                    <option value="">-- 选择供应商 --</option>
+                    <option value="">${t('adapter.selectProvider')}</option>
                     ${options}
                 </select>
                 <button class="btn btn-sm btn-danger adapter-form-remove" onclick="removeAdapterRow(${i})">✕</button>
             </div>
             <div class="adapter-form-row2">
-                <input class="adapter-form-model" placeholder="上游模型名，如 glm-5、qwen-max" value="${esc(row.model_name)}"
+                <input class="adapter-form-model" placeholder="${t('adapter.ph.modelName')}" value="${esc(row.model_name)}"
                        onchange="_adapterRows[${i}].model_name=this.value">
             </div>
             <div class="adapter-form-row2" style="margin-top:4px">
-                <label style="font-size:12px;color:#888;flex-shrink:0">超时</label>
+                <label style="font-size:12px;color:#888;flex-shrink:0">${t('adapter.label.timeout')}</label>
                 <input class="adapter-form-timeout" type="number" value="${row.timeout}" min="1"
                        onchange="_adapterRows[${i}].timeout=parseInt(this.value)||60">
-                <span style="font-size:12px;color:#888">秒</span>
+                <span style="font-size:12px;color:#888">${t('adapter.unit.seconds')}</span>
             </div>
         </div>
         `;
@@ -253,11 +252,10 @@ function renderAdapterRows() {
 async function saveModel() {
     const original = document.getElementById('mf-original-name').value;
     const name = document.getElementById('mf-name').value.trim();
-    if (!name) return alert('请填写模型名称');
+    if (!name) return alert(t('model.validation.nameRequired'));
 
-    // 校验 adapter 数据
     const validAdapters = _adapterRows.filter(r => r.adapter && r.model_name);
-    if (!validAdapters.length) return alert('请至少添加一个有效的适配器（供应商和模型名必填）');
+    if (!validAdapters.length) return alert(t('model.validation.adapterRequired'));
 
     const body = {
         mode: document.getElementById('mf-mode').value,
@@ -274,27 +272,26 @@ async function saveModel() {
     loadConfig();
 }
 
-async function deleteModel(name) { if (confirm('确认删除?')) { await api('DELETE', `/api/config/models/${encodeURIComponent(name)}`); loadConfig(); } }
+async function deleteModel(name) { if (confirm(t('common.confirmDelete'))) { await api('DELETE', `/api/config/models/${encodeURIComponent(name)}`); loadConfig(); } }
 
-// ========== 模型测试 ==========
+// ========== Model test ==========
 async function testModel(name) {
     const el = document.getElementById(`model-test-${name}`);
     el.style.display = 'block';
-    el.innerHTML = '<span class="test-loading">测试中（逐个探测 chain 中的适配器）...</span>';
+    el.innerHTML = `<span class="test-loading">${t('model.test.chainProbe')}</span>`;
     const result = await api('POST', `/api/config/models/${encodeURIComponent(name)}/test`);
 
     let html = '';
 
-    // chain 详情表格
     if (result.chain && result.chain.length > 0) {
-        html += `<table class="usage-table chain-test-table"><tr><th>优先级</th><th>供应商</th><th>模型</th><th>状态</th><th>延迟</th><th>Token</th></tr>`;
+        html += `<table class="usage-table chain-test-table"><tr><th>${t('chain.th.priority')}</th><th>${t('chain.th.provider')}</th><th>${t('chain.th.model')}</th><th>${t('chain.th.status')}</th><th>${t('chain.th.latency')}</th><th>Token</th></tr>`;
         result.chain.forEach(c => {
             const isHit = result.success && c.adapter === result.adapter_used && c.success;
             const statusBadge = c.skipped
-                ? '<span class="badge badge-gray">跳过</span>'
+                ? `<span class="badge badge-gray">${t('chain.status.skipped')}</span>`
                 : c.success
-                    ? `<span class="badge badge-green">成功${isHit ? ' ✓' : ''}</span>`
-                    : `<span class="badge badge-red">失败</span>`;
+                    ? `<span class="badge badge-green">${t('common.success')}${isHit ? ' ✓' : ''}</span>`
+                    : `<span class="badge badge-red">${t('common.failed')}</span>`;
             const tokenStr = c.usage ? `${c.usage.prompt_tokens || 0}→${c.usage.completion_tokens || 0}` : '-';
             const errorStr = c.error ? `<div class="test-chain-error">${esc(c.error)}</div>` : '';
             html += `<tr class="${isHit ? 'chain-hit-row' : ''}">
@@ -309,18 +306,17 @@ async function testModel(name) {
         html += '</table>';
     }
 
-    // 总结
     if (result.success) {
-        html = `<span class="test-ok">调用成功</span> <span class="test-meta">命中: ${esc(result.adapter_used)} · 延迟: ${result.latency_ms}ms</span>
+        html = `<span class="test-ok">${t('model.test.success')}</span> <span class="test-meta">${t('model.test.hit')}: ${esc(result.adapter_used)} · ${t('provider.test.latency')}: ${result.latency_ms}ms</span>
             ${result.preview ? `<div class="test-preview">"${esc(result.preview)}"</div>` : ''}` + html;
     } else {
-        html = `<span class="test-fail">全部失败</span> <span class="test-meta">${esc(result.error || '')}</span>` + html;
+        html = `<span class="test-fail">${t('model.test.allFailed')}</span> <span class="test-meta">${esc(result.error || '')}</span>` + html;
     }
 
     el.innerHTML = html;
 }
 
-// ========== API Key 管理 ==========
+// ========== API Keys ==========
 async function loadKeys() {
     const keys = await api('GET', '/api/keys');
     renderKeys(keys);
@@ -328,25 +324,25 @@ async function loadKeys() {
 
 function renderKeys(keys) {
     const el = document.getElementById('keys-list');
-    if (!keys.length) { el.innerHTML = '<p style="color:#999">暂无 API Key</p>'; return; }
+    if (!keys.length) { el.innerHTML = `<p style="color:#999">${t('key.empty')}</p>`; return; }
     el.innerHTML = keys.map(k => `
         <div class="card">
             <div class="card-header">
                 <span class="card-title">${esc(k.name || 'unnamed')}</span>
-                <span class="badge ${k.enabled ? 'badge-green' : 'badge-red'}">${k.enabled ? '启用' : '禁用'}</span>
+                <span class="badge ${k.enabled ? 'badge-green' : 'badge-red'}">${k.enabled ? t('common.enabled') : t('common.disabled')}</span>
             </div>
             <div class="card-body">
                 <table>
                     <tr><td>Key</td><td><code>${esc(k.key)}</code></td></tr>
-                    <tr><td>每分钟限流</td><td>${k.rate_limit || '不限'}</td></tr>
-                    <tr><td>每日限流</td><td>${k.daily_limit || '不限'}</td></tr>
-                    ${k.allowed_models && k.allowed_models.length ? `<tr><td>可用模型</td><td>${k.allowed_models.map(m => `<span class="badge badge-blue">${esc(m)}</span>`).join(' ')}</td></tr>` : ''}
-                    ${k.description ? `<tr><td>描述</td><td>${esc(k.description)}</td></tr>` : ''}
+                    <tr><td>${t('key.td.rateLimit')}</td><td>${k.rate_limit || t('common.unlimited')}</td></tr>
+                    <tr><td>${t('key.td.dailyLimit')}</td><td>${k.daily_limit || t('common.unlimited')}</td></tr>
+                    ${k.allowed_models && k.allowed_models.length ? `<tr><td>${t('key.td.allowedModels')}</td><td>${k.allowed_models.map(m => `<span class="badge badge-blue">${esc(m)}</span>`).join(' ')}</td></tr>` : ''}
+                    ${k.description ? `<tr><td>${t('common.description')}</td><td>${esc(k.description)}</td></tr>` : ''}
                 </table>
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="toggleKey('${esc(k.key_raw || k.key)}')">${k.enabled ? '禁用' : '启用'}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteKey('${esc(k.key_raw || k.key)}')">删除</button>
+                <button class="btn btn-sm" onclick="toggleKey('${esc(k.key_raw || k.key)}')">${k.enabled ? t('common.disable') : t('common.enable')}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteKey('${esc(k.key_raw || k.key)}')">${t('common.delete')}</button>
             </div>
         </div>
     `).join('');
@@ -374,9 +370,9 @@ function copyKey() {
 }
 
 async function toggleKey(key) { await api('PATCH', `/api/keys/${encodeURIComponent(key)}/toggle`); loadKeys(); }
-async function deleteKey(key) { if (confirm('确认删除?')) { await api('DELETE', `/api/keys/${encodeURIComponent(key)}`); loadKeys(); } }
+async function deleteKey(key) { if (confirm(t('common.confirmDelete'))) { await api('DELETE', `/api/keys/${encodeURIComponent(key)}`); loadKeys(); } }
 
-// ========== 用量统计 ==========
+// ========== Usage ==========
 let usageState = { groupBy: 'provider', dateFrom: null, dateTo: null };
 
 async function loadUsage() {
@@ -398,11 +394,12 @@ async function loadUsage() {
     const data = await api('GET', `/api/usage?${params}`);
 
     const el = document.getElementById('usage-summary');
-    const groupLabel = { provider: '服务商', model: '模型', api_key: 'API Key' }[groupBy];
+    const _dimLabel = { provider: t('usage.dim.provider'), model: t('usage.dim.model'), api_key: t('usage.dim.apiKey') };
+    const groupLabel = _dimLabel[groupBy];
     el.innerHTML = `
-        <div class="usage-summary">共 <strong>${data.total}</strong> 次请求，按<strong>${groupLabel}</strong>分组</div>
+        <div class="usage-summary">${t('usage.summary', data.total, groupLabel)}</div>
         <table class="usage-table">
-            <tr><th>${groupLabel}</th><th>调用量</th><th>成功率</th><th>输入Token</th><th>输出Token</th><th>平均延迟</th><th></th></tr>
+            <tr><th>${groupLabel}</th><th>${t('usage.th.requests')}</th><th>${t('usage.th.successRate')}</th><th>${t('usage.th.tokensIn')}</th><th>${t('usage.th.tokensOut')}</th><th>${t('usage.th.avgLatency')}</th><th></th></tr>
             ${(data.groups || []).map(g => `
                 <tr>
                     <td><strong>${esc(g.name)}</strong></td>
@@ -411,7 +408,7 @@ async function loadUsage() {
                     <td>${formatNum(g.tokens_in)}</td>
                     <td>${formatNum(g.tokens_out)}</td>
                     <td>${g.avg_latency_ms}ms</td>
-                    <td><button class="btn btn-sm drill-btn" onclick="drillUsage('${esc(g.name)}')">下钻</button></td>
+                    <td><button class="btn btn-sm drill-btn" onclick="drillUsage('${esc(g.name)}')">${t('usage.btn.drill')}</button></td>
                 </tr>
             `).join('')}
         </table>
@@ -420,17 +417,15 @@ async function loadUsage() {
 }
 
 async function drillUsage(topItemName, filters) {
-    // topItemName: 主维度的值（始终不变，如 groupBy=provider 时为 'dashscope'）
-    // filters: 累积的中间维度过滤条件 {model: 'glm-5', ...}
     filters = filters || {};
 
     const allDims = ['provider', 'model', 'api_key'];
-    const dimLabel = { provider: '服务商', model: '模型', api_key: 'API Key' };
+    const _dimLabel = { provider: t('usage.dim.provider'), model: t('usage.dim.model'), api_key: t('usage.dim.apiKey') };
     const locked = new Set([usageState.groupBy, ...Object.keys(filters)]);
     const remaining = allDims.filter(d => !locked.has(d));
     if (!remaining.length) return;
     const subGroup = remaining[0];
-    const subLabel = dimLabel[subGroup];
+    const subLabel = _dimLabel[subGroup];
 
     const params = new URLSearchParams({
         group_by: usageState.groupBy, sub_group: subGroup,
@@ -441,21 +436,20 @@ async function drillUsage(topItemName, filters) {
     }
     const data = await api('GET', `/api/usage/${encodeURIComponent(topItemName)}/detail?${params}`);
 
-    // 面包屑：主维度 → 中间过滤 → 当前子维度
-    const crumbs = [`${dimLabel[usageState.groupBy]}: ${topItemName}`];
+    const crumbs = [`${_dimLabel[usageState.groupBy]}: ${topItemName}`];
     for (const [dim, val] of Object.entries(filters)) {
-        crumbs.push(`${dimLabel[dim]}: ${val}`);
+        crumbs.push(`${_dimLabel[dim]}: ${val}`);
     }
 
     const canDrillMore = remaining.length > 1;
     const el = document.getElementById('usage-detail');
     el.innerHTML = `
         <div class="detail-header">
-            <h4>${crumbs.join(' → ')} → 按${subLabel}下钻</h4>
-            <button class="btn btn-sm" onclick="document.getElementById('usage-detail').style.display='none'">关闭</button>
+            <h4>${crumbs.join(' → ')} → ${t('usage.drill.by', subLabel)}</h4>
+            <button class="btn btn-sm" onclick="document.getElementById('usage-detail').style.display='none'">${t('common.close')}</button>
         </div>
         <table class="usage-table">
-            <tr><th>${subLabel}</th><th>调用量</th><th>成功</th><th>失败</th><th>输入Token</th><th>输出Token</th><th>平均延迟</th>${canDrillMore ? '<th></th>' : ''}</tr>
+            <tr><th>${subLabel}</th><th>${t('usage.th.requests')}</th><th>${t('usage.th.success')}</th><th>${t('usage.th.failed')}</th><th>${t('usage.th.tokensIn')}</th><th>${t('usage.th.tokensOut')}</th><th>${t('usage.th.avgLatency')}</th>${canDrillMore ? '<th></th>' : ''}</tr>
             ${data.map(g => {
                 const nextFilters = JSON.stringify({...filters, [subGroup]: g.name});
                 return `
@@ -467,7 +461,7 @@ async function drillUsage(topItemName, filters) {
                     <td>${formatNum(g.tokens_in)}</td>
                     <td>${formatNum(g.tokens_out)}</td>
                     <td>${g.avg_latency_ms}ms</td>
-                    ${canDrillMore ? `<td><button class="btn btn-sm drill-btn" onclick='drillUsage(${JSON.stringify(topItemName)}, ${esc(nextFilters)})'>下钻</button></td>` : ''}
+                    ${canDrillMore ? `<td><button class="btn btn-sm drill-btn" onclick='drillUsage(${JSON.stringify(topItemName)}, ${esc(nextFilters)})'>${t('usage.btn.drill')}</button></td>` : ''}
                 </tr>`;
             }).join('')}
         </table>
@@ -475,7 +469,7 @@ async function drillUsage(topItemName, filters) {
     el.style.display = 'block';
 }
 
-// ========== 调试日志 ==========
+// ========== Logs ==========
 let logRefreshTimer = null;
 
 async function loadLogs() {
@@ -491,7 +485,6 @@ async function loadLogs() {
     const data = await api('GET', `/api/logs?${params}`);
     renderLogs(data.logs || []);
 
-    // 自动刷新
     const autoRefresh = document.getElementById('log-auto-refresh').checked;
     if (autoRefresh && !logRefreshTimer) {
         logRefreshTimer = setInterval(loadLogs, 3000);
@@ -503,7 +496,7 @@ async function loadLogs() {
 
 function renderLogs(logs) {
     const el = document.getElementById('log-container');
-    if (!logs.length) { el.innerHTML = '<div class="log-line log-INFO">暂无日志</div>'; return; }
+    if (!logs.length) { el.innerHTML = `<div class="log-line log-INFO">${t('log.empty')}</div>`; return; }
     el.innerHTML = logs.map(l => {
         const ts = l.timestamp ? l.timestamp.split('T')[1].split('.')[0] : '';
         const level = l.level || 'INFO';
@@ -513,9 +506,346 @@ function renderLogs(logs) {
     el.scrollTop = el.scrollHeight;
 }
 
-// ========== 工具函数 ==========
+// ========== Utilities ==========
 function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
 function formatNum(n) { if (n == null) return '0'; return n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n); }
 
-// 页面加载
-document.addEventListener('DOMContentLoaded', () => loadConfig());
+// ========== Conversations ==========
+let convState = { page: 0, limit: 50, selectedLine: null };
+const _truncatedTexts = {};
+
+async function loadConversations() {
+    const apiKey = document.getElementById('conv-api-key').value;
+    const model = document.getElementById('conv-model').value;
+    const success = document.getElementById('conv-success').value;
+
+    const params = new URLSearchParams({ limit: convState.limit, offset: convState.page * convState.limit });
+    if (apiKey) params.set('api_key', apiKey);
+    if (model) params.set('model', model);
+    if (success) params.set('success', success);
+
+    const data = await api('GET', `/api/conversations?${params}`);
+
+    _fillSelect('conv-api-key', data.api_keys || [], apiKey);
+    _fillSelect('conv-model', data.models || [], model);
+
+    renderConvList(data);
+    renderConvPagination(data);
+}
+
+function _fillSelect(id, options, currentVal) {
+    const sel = document.getElementById(id);
+    const html = `<option value="">${t('common.all')}</option>` + options.map(o =>
+        `<option value="${esc(o)}"${o === currentVal ? ' selected' : ''}>${esc(o)}</option>`
+    ).join('');
+    sel.innerHTML = html;
+}
+
+function renderConvList(data) {
+    const el = document.getElementById('conv-list');
+    if (!data.items || !data.items.length) {
+        el.innerHTML = `<p style="color:#999;padding:16px;text-align:center">${t('conv.empty')}</p>`;
+        return;
+    }
+    el.innerHTML = data.items.map(item => {
+        const ts = item.timestamp ? item.timestamp.split('T')[1]?.split('.')[0] || '' : '';
+        const date = item.timestamp ? item.timestamp.split('T')[0] : '';
+        const active = item.line === convState.selectedLine ? ' active' : '';
+        const statusBadge = item.success
+            ? `<span class="badge badge-green">${t('common.success')}</span>`
+            : `<span class="badge badge-red">${t('common.failed')}</span>`;
+        const toolBadge = item.has_tool_use ? ' <span class="badge badge-blue">Tool</span>' : '';
+        return `
+        <div class="conv-item${active}" onclick="loadConvDetail(${item.line})">
+            <div class="conv-item-header">
+                <span class="badge badge-blue">${esc(item.model)}</span>
+                ${statusBadge}${toolBadge}
+                <span class="conv-item-time">${date} ${ts}</span>
+            </div>
+            <div class="conv-item-meta">${esc(item.adapter)} · ${item.latency_ms}ms · ${formatNum(item.tokens_in)}→${formatNum(item.tokens_out)} · key:${esc(item.api_key)}</div>
+            <div class="conv-item-preview">${esc(item.output_preview)}</div>
+        </div>`;
+    }).join('');
+}
+
+function renderConvPagination(data) {
+    const el = document.getElementById('conv-pagination');
+    const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
+    const curPage = convState.page + 1;
+    el.innerHTML = `
+        <button class="btn btn-sm" onclick="convPrev()" ${convState.page <= 0 ? 'disabled' : ''}>${t('conv.pagination.prev')}</button>
+        <span>${curPage} / ${totalPages}</span>
+        <span style="color:#999;font-size:12px">(${t('conv.pagination.count', data.total)})</span>
+        <button class="btn btn-sm" onclick="convNext(${totalPages})" ${curPage >= totalPages ? 'disabled' : ''}>${t('conv.pagination.next')}</button>
+    `;
+}
+
+function convPrev() { if (convState.page > 0) { convState.page--; loadConversations(); } }
+function convNext(totalPages) { if (convState.page + 1 < totalPages) { convState.page++; loadConversations(); } }
+
+async function loadConvDetail(line) {
+    convState.selectedLine = line;
+    document.querySelectorAll('.conv-item').forEach(el => {
+        const match = el.getAttribute('onclick');
+        if (match && match.includes(`loadConvDetail(${line})`)) el.classList.add('active');
+        else el.classList.remove('active');
+    });
+
+    const detail = document.getElementById('conv-detail');
+    detail.innerHTML = `<div class="conv-detail-empty">${t('common.loading')}</div>`;
+
+    const rec = await api('GET', `/api/conversations/${line}`);
+    if (rec.error) {
+        detail.innerHTML = `<div class="conv-detail-empty">${t('conv.detail.loadError', rec.error)}</div>`;
+        return;
+    }
+    renderConvDetail(rec);
+}
+
+function renderConvDetail(rec) {
+    const el = document.getElementById('conv-detail');
+    const ts = rec.timestamp || '';
+
+    let html = `<div class="conv-detail-header"><table>
+        <tr><td><strong>${t('conv.detail.time')}</strong></td><td>${esc(ts)}</td><td><strong>${t('conv.detail.model')}</strong></td><td><span class="badge badge-blue">${esc(rec.model)}</span></td></tr>
+        <tr><td><strong>${t('conv.detail.adapter')}</strong></td><td>${esc(rec.adapter)}</td><td><strong>${t('conv.detail.apiKey')}</strong></td><td>${esc(rec.api_key)}</td></tr>
+        <tr><td><strong>${t('conv.detail.latency')}</strong></td><td>${rec.latency_ms}ms</td><td><strong>${t('conv.detail.token')}</strong></td><td>${formatNum(rec.tokens_in)} → ${formatNum(rec.tokens_out)}</td></tr>
+        ${rec.request_id ? `<tr><td><strong>Request ID</strong></td><td colspan="3">${esc(rec.request_id)}</td></tr>` : ''}
+    </table></div>`;
+
+    html += `<div class="conv-detail-section-title">${t('conv.detail.inputMessages')}</div>`;
+    if (rec.messages && rec.messages.length) {
+        html += renderMessagesGrouped(rec.messages);
+    } else {
+        html += `<p style="color:#999">${t('common.noMessages')}</p>`;
+    }
+
+    if (rec.output && rec.output.length) {
+        html += `<div class="conv-detail-section"><div class="conv-detail-section-title">${t('conv.detail.output')}</div>`;
+        html += rec.output.map(block => {
+            if (block.type === 'text') {
+                return renderMessageBubble('assistant', t('role.assistant'), block.text);
+            } else if (block.type === 'tool_use') {
+                const aStr = block.arguments || '';
+                const aLen = typeof aStr === 'string' ? aStr.length : JSON.stringify(aStr).length;
+                return `<div class="conv-message conv-msg-assistant">
+                    <div class="conv-message-role">TOOL CALL <span class="conv-tool-name">${esc(block.name)}</span> ${_roleMeta(aLen)}</div>
+                    <div class="conv-tool-block">${formatArgs(block.arguments)}</div>
+                </div>`;
+            }
+            return '';
+        }).join('');
+        html += '</div>';
+    }
+
+    if (rec.error) {
+        html += `<div class="conv-error-block"><strong>${t('conv.detail.error')}</strong>${esc(rec.error)}</div>`;
+    }
+
+    el.innerHTML = html;
+}
+
+function renderMessagesGrouped(messages) {
+    const toolResultMap = {};
+    messages.forEach(m => {
+        if (m.role === 'tool' && m.tool_call_id) {
+            toolResultMap[m.tool_call_id] = m;
+        }
+    });
+
+    const rendered = new Set();
+    let html = '';
+
+    messages.forEach((msg, idx) => {
+        if (rendered.has(idx)) return;
+
+        if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length) {
+            if (msg.content) {
+                html += renderMessageBubble('assistant', t('role.assistant'), typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content));
+            }
+            msg.tool_calls.forEach(tc => {
+                const func = tc.function || {};
+                const tcId = tc.id || '';
+                const result = tcId ? toolResultMap[tcId] : null;
+                if (result) {
+                    messages.forEach((m, i) => { if (m === result) rendered.add(i); });
+                }
+                const argsStr = func.arguments || '';
+                const argsLen = typeof argsStr === 'string' ? argsStr.length : JSON.stringify(argsStr).length;
+                html += `<div class="conv-tool-group">`;
+                html += `<div class="conv-message conv-msg-assistant conv-tool-call">
+                    <div class="conv-message-role">TOOL CALL <span class="conv-tool-name">${esc(func.name || '')}</span> ${tcId ? `<span class="conv-tool-group-id">${esc(tcId)}</span>` : ''} ${_roleMeta(argsLen)}</div>
+                    <div class="conv-tool-block">${formatArgs(func.arguments)}</div>
+                </div>`;
+                if (result) {
+                    const rLen = _contentLen(result.content);
+                    html += `<div class="conv-message conv-msg-tool">
+                        <div class="conv-message-role">${t('conv.toolResult')} ${_roleMeta(rLen)}</div>
+                        <div class="conv-message-content">${renderContent(result.content)}</div>
+                    </div>`;
+                }
+                html += `</div>`;
+            });
+            return;
+        }
+
+        if (msg.role === 'tool') {
+            const toolId = msg.tool_call_id ? `<span class="conv-tool-name">${esc(msg.tool_call_id)}</span> ` : '';
+            const rLen = _contentLen(msg.content);
+            html += `<div class="conv-message conv-msg-tool">
+                <div class="conv-message-role">${t('conv.toolResult')} ${toolId}${_roleMeta(rLen)}</div>
+                <div class="conv-message-content">${renderContent(msg.content)}</div>
+            </div>`;
+            return;
+        }
+
+        html += renderMessage(msg);
+    });
+
+    return html;
+}
+
+function renderMessage(msg) {
+    const role = msg.role || 'user';
+    const content = msg.content;
+
+    if (role === 'tool') {
+        const toolId = msg.tool_call_id ? `<span class="conv-tool-name">${esc(msg.tool_call_id)}</span> ` : '';
+        const rLen = _contentLen(content);
+        return `<div class="conv-message conv-msg-tool">
+            <div class="conv-message-role">${t('conv.toolResult')} ${toolId}${_roleMeta(rLen)}</div>
+            <div class="conv-message-content">${renderContent(content)}</div>
+        </div>`;
+    }
+
+    if (typeof content === 'string') {
+        return renderMessageBubble(role, _roleLabel(role), content);
+    }
+
+    if (Array.isArray(content)) {
+        return content.map(block => {
+            if (!block || typeof block !== 'object') return '';
+            if (block.type === 'text') {
+                return renderMessageBubble(role, _roleLabel(role), block.text || '');
+            } else if (block.type === 'tool_use') {
+                const inputStr = block.input || '';
+                const inputLen = typeof inputStr === 'string' ? inputStr.length : JSON.stringify(inputStr).length;
+                return `<div class="conv-message conv-msg-${_roleClass(role)}">
+                    <div class="conv-message-role">${_roleLabel(role)} - TOOL CALL <span class="conv-tool-name">${esc(block.name)}</span> ${_roleMeta(inputLen)}</div>
+                    <div class="conv-tool-block">${formatArgs(block.input)}</div>
+                </div>`;
+            } else if (block.type === 'tool_result') {
+                const rLen = _contentLen(block.content);
+                return `<div class="conv-message conv-msg-tool">
+                    <div class="conv-message-role">${t('conv.toolResult')} ${_roleMeta(rLen)}</div>
+                    <div class="conv-message-content">${renderContent(block.content)}</div>
+                </div>`;
+            } else if (block.type === 'image' || block.type === 'image_url') {
+                return `<div class="conv-message conv-msg-${_roleClass(role)}">
+                    <div class="conv-message-role">${_roleLabel(role)}</div>
+                    <div class="conv-message-content" style="color:#999">${t('common.image')}</div>
+                </div>`;
+            }
+            return '';
+        }).join('');
+    }
+
+    let parts = '';
+    if (msg.tool_calls && msg.tool_calls.length) {
+        parts = msg.tool_calls.map(tc => {
+            const func = tc.function || {};
+            const aStr = func.arguments || '';
+            const aLen = typeof aStr === 'string' ? aStr.length : JSON.stringify(aStr).length;
+            return `<div class="conv-message conv-msg-assistant">
+                <div class="conv-message-role">${t('role.assistant')} - TOOL CALL <span class="conv-tool-name">${esc(func.name || '')}</span> ${tc.id ? `<span class="conv-tool-group-id">${esc(tc.id)}</span>` : ''} ${_roleMeta(aLen)}</div>
+                <div class="conv-tool-block">${formatArgs(func.arguments)}</div>
+            </div>`;
+        }).join('');
+    }
+    return parts || `<div class="conv-message conv-msg-${_roleClass(role)}"><div class="conv-message-role">${_roleLabel(role)} ${_roleMeta(0)}</div><div class="conv-message-content" style="color:#999">${t('common.empty')}</div></div>`;
+}
+
+function renderMessageBubble(role, label, text) {
+    const cls = _roleClass(role);
+    const needTruncate = text && text.length > 10000;
+    const uid = 'mc_' + Math.random().toString(36).slice(2, 8);
+    const displayText = needTruncate ? text.substring(0, 5000) : text;
+    const charsBadge = text ? `<span class="conv-chars-badge">${text.length} chars</span>` : '';
+    const foldLabel = `<span class="conv-fold-label">${t('conv.fold')}</span>`;
+    if (needTruncate) {
+        _truncatedTexts[uid] = text;
+    }
+    return `<div class="conv-message conv-msg-${cls}">
+        <div class="conv-message-role">${esc(label)} ${charsBadge}${foldLabel}</div>
+        <div class="conv-message-content" id="${uid}">${esc(displayText)}</div>
+    </div>`;
+}
+
+function convExpandText(uid) {
+    const full = _truncatedTexts[uid];
+    if (!full) return;
+    const el = document.getElementById(uid);
+    if (el) el.textContent = full;
+    delete _truncatedTexts[uid];
+}
+
+function formatArgs(args) {
+    if (!args) return '';
+    try {
+        const obj = typeof args === 'string' ? JSON.parse(args) : args;
+        return esc(JSON.stringify(obj, null, 2));
+    } catch (e) {
+        return esc(String(args));
+    }
+}
+
+function _contentLen(content) {
+    if (typeof content === 'string') return content.length;
+    if (Array.isArray(content)) return content.reduce((s, b) => s + (typeof b === 'string' ? b.length : (b && b.text ? b.text.length : JSON.stringify(b).length)), 0);
+    if (content == null) return 0;
+    return JSON.stringify(content).length;
+}
+
+function _roleMeta(len) {
+    const badge = len ? `<span class="conv-chars-badge">${len} chars</span>` : '';
+    return `${badge}<span class="conv-fold-label">${t('conv.fold')}</span>`;
+}
+
+function renderContent(content) {
+    if (typeof content === 'string') return esc(content);
+    if (Array.isArray(content)) {
+        return content.map(b => {
+            if (typeof b === 'string') return esc(b);
+            if (b && b.type === 'text') return esc(b.text || '');
+            return esc(JSON.stringify(b));
+        }).join('');
+    }
+    if (content == null) return `<span style="color:#999">${t('common.empty')}</span>`;
+    return esc(JSON.stringify(content));
+}
+
+function _roleLabel(role) {
+    return { user: t('role.user'), assistant: t('role.assistant'), system: t('role.system'), tool: t('role.tool') }[role] || role;
+}
+function _roleClass(role) {
+    return { user: 'user', assistant: 'assistant', system: 'system', tool: 'tool' }[role] || 'user';
+}
+
+// Page load
+document.addEventListener('DOMContentLoaded', () => {
+    loadConfig();
+    // Conversation detail: click to toggle expand/fold
+    document.getElementById('conv-detail').addEventListener('click', function(e) {
+        const msg = e.target.closest('.conv-message');
+        if (!msg) return;
+        msg.classList.toggle('expanded');
+        const lbl = msg.querySelector('.conv-fold-label');
+        if (lbl) lbl.textContent = msg.classList.contains('expanded') ? t('conv.expanded') : t('conv.fold');
+        if (msg.classList.contains('expanded')) {
+            const content = msg.querySelector('.conv-message-content');
+            if (content && content.id && _truncatedTexts[content.id]) {
+                convExpandText(content.id);
+            }
+        }
+    });
+});
