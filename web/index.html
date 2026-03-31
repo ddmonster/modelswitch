@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ModelSwitch Gateway</title>
+    <link rel="stylesheet" href="/web/css/style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>ModelSwitch Gateway</h1>
+    </div>
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('providers')">供应商管理</button>
+        <button class="tab" onclick="switchTab('models')">模型配置</button>
+        <button class="tab" onclick="switchTab('keys')">API Key</button>
+        <button class="tab" onclick="switchTab('usage')">用量统计</button>
+        <button class="tab" onclick="switchTab('logs')">调试日志</button>
+    </div>
+
+    <!-- Tab: 供应商管理 -->
+    <div id="tab-providers" class="tab-content active">
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="showAddProvider()">+ 新建供应商</button>
+            <button class="btn" onclick="loadConfig()">刷新</button>
+        </div>
+        <div id="providers-list"></div>
+        <div id="provider-form" class="modal" style="display:none">
+            <div class="modal-content">
+                <h3 id="provider-form-title">新建供应商</h3>
+                <input type="hidden" id="pf-original-name">
+                <div class="form-group">
+                    <label>名称</label>
+                    <input id="pf-name" placeholder="如 dashscope">
+                </div>
+                <div class="form-group">
+                    <label>协议类型</label>
+                    <select id="pf-provider">
+                        <option value="openai">OpenAI 兼容</option>
+                        <option value="anthropic">Anthropic</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Base URL</label>
+                    <input id="pf-base-url" placeholder="https://api.example.com/v1">
+                </div>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <input id="pf-api-key" type="password" placeholder="${ENV_VAR} 或直接填入">
+                </div>
+                <div class="form-group">
+                    <label>自定义 Headers (JSON)</label>
+                    <textarea id="pf-headers" rows="2" placeholder='{"X-Custom": "value"}'>{}</textarea>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="saveProvider()">保存</button>
+                    <button class="btn" onclick="hideProviderForm()">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: 模型配置 -->
+    <div id="tab-models" class="tab-content">
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="showAddModel()">+ 新建模型</button>
+            <button class="btn" onclick="loadConfig()">刷新</button>
+        </div>
+        <div id="models-list"></div>
+        <div id="model-form" class="modal" style="display:none">
+            <div class="modal-content">
+                <h3 id="model-form-title">新建模型</h3>
+                <input type="hidden" id="mf-original-name">
+                <div class="form-group">
+                    <label>模型名称</label>
+                    <input id="mf-name" placeholder="如 glm5">
+                </div>
+                <div class="form-group">
+                    <label>调用模式</label>
+                    <select id="mf-mode">
+                        <option value="chain">Chain (fallback 链)</option>
+                        <option value="adapter">Adapter (直接调用)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <input id="mf-description" placeholder="模型描述">
+                </div>
+                <div class="form-group">
+                    <label>适配器列表</label>
+                    <div id="mf-adapters-list"></div>
+                    <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addAdapterRow()">+ 添加适配器</button>
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="saveModel()">保存</button>
+                    <button class="btn" onclick="hideModelForm()">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: API Key -->
+    <div id="tab-keys" class="tab-content">
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="showAddKey()">+ 新建 Key</button>
+            <button class="btn" onclick="loadKeys()">刷新</button>
+        </div>
+        <div id="keys-list"></div>
+        <div id="key-form" class="modal" style="display:none">
+            <div class="modal-content">
+                <h3>新建 API Key</h3>
+                <div class="form-group">
+                    <label>名称</label>
+                    <input id="kf-name" placeholder="如 张三">
+                </div>
+                <div class="form-group">
+                    <label>描述</label>
+                    <input id="kf-description" placeholder="用途说明">
+                </div>
+                <div class="form-group">
+                    <label>每分钟限流</label>
+                    <input id="kf-rate-limit" type="number" value="60" min="0">
+                </div>
+                <div class="form-group">
+                    <label>每日限流 (0=不限)</label>
+                    <input id="kf-daily-limit" type="number" value="0" min="0">
+                </div>
+                <div class="form-group">
+                    <label>允许的模型 (逗号分隔，空=全部)</label>
+                    <input id="kf-allowed-models" placeholder="glm5, gpt4o">
+                </div>
+                <div class="form-actions">
+                    <button class="btn btn-primary" onclick="createKey()">创建</button>
+                    <button class="btn" onclick="hideKeyForm()">取消</button>
+                </div>
+            </div>
+        </div>
+        <div id="new-key-result" class="modal" style="display:none">
+            <div class="modal-content">
+                <h3>API Key 创建成功</h3>
+                <p class="warning">请立即保存此 Key，关闭后无法再次查看</p>
+                <div class="key-display">
+                    <input id="new-key-value" readonly>
+                    <button class="btn" onclick="copyKey()">复制</button>
+                </div>
+                <div class="form-actions">
+                    <button class="btn" onclick="document.getElementById('new-key-result').style.display='none'">关闭</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Tab: 用量统计 -->
+    <div id="tab-usage" class="tab-content">
+        <div class="toolbar">
+            <label>主维度：
+                <select id="usage-group-by" onchange="loadUsage()">
+                    <option value="provider">模型服务商</option>
+                    <option value="model">模型</option>
+                    <option value="api_key">API Key</option>
+                </select>
+            </label>
+            <label>日期：
+                <select id="usage-date" onchange="loadUsage()">
+                    <option value="today">今日</option>
+                    <option value="week">本周</option>
+                    <option value="month">本月</option>
+                </select>
+            </label>
+            <button class="btn" onclick="loadUsage()">刷新</button>
+        </div>
+        <div id="usage-summary"></div>
+        <div id="usage-detail" style="display:none"></div>
+    </div>
+
+    <!-- Tab: 调试日志 -->
+    <div id="tab-logs" class="tab-content">
+        <div class="toolbar">
+            <label>级别：
+                <select id="log-level" onchange="loadLogs()">
+                    <option value="">全部</option>
+                    <option value="DEBUG">DEBUG</option>
+                    <option value="INFO">INFO</option>
+                    <option value="WARNING">WARNING</option>
+                    <option value="ERROR">ERROR</option>
+                </select>
+            </label>
+            <label>Request ID：
+                <input id="log-request-id" placeholder="过滤" style="width:120px">
+            </label>
+            <label>API Key：
+                <input id="log-api-key" placeholder="过滤" style="width:120px">
+            </label>
+            <button class="btn" onclick="loadLogs()">刷新</button>
+            <label>
+                <input type="checkbox" id="log-auto-refresh"> 自动刷新
+            </label>
+        </div>
+        <div id="log-container" class="log-viewer"></div>
+    </div>
+
+    <script src="/web/js/app.js"></script>
+</body>
+</html>

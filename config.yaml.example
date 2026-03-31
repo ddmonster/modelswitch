@@ -1,0 +1,77 @@
+gateway:
+  host: 0.0.0.0
+  port: 8000
+  log_level: DEBUG
+  log_dir: logs
+  log_max_bytes: 104857600
+  log_backup_count: 30
+  log_request_body: true
+  log_response_body: false
+  log_max_body_length: 4096
+  usage_db: data/usage.db
+  usage_flush_interval: 10
+providers:
+  - name: dashscope
+    provider: openai
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: YOUR_DASHSCOPE_API_KEY
+    custom_headers: {}
+    enabled: true
+  - name: glm-plan
+    provider: openai
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key: YOUR_GLMPLAN_API_KEY
+    custom_headers: {}
+    enabled: true
+models:
+  glm-5:
+    mode: chain
+    description: GLM-5
+    adapters:
+      - adapter: dashscope
+        model_name: glm-5
+        priority: 3
+        timeout: 60
+      - adapter: glm-plan
+        model_name: glm-5.1
+        priority: 1
+        timeout: 60
+      - adapter: glm-plan
+        model_name: glm-5-turbo
+        priority: 2
+        timeout: 60
+  qwen-max:
+    mode: chain
+    description: qwen-max
+    adapters:
+      - adapter: dashscope
+        model_name: qwen3-max
+        priority: 1
+        timeout: 60
+  qwen-plus:
+    mode: chain
+    description: qwen-plus
+    adapters:
+      - adapter: dashscope
+        model_name: qwen-plus
+        priority: 1
+        timeout: 60
+api_keys:
+  - key: YOUR_ADMIN_KEY
+    name: admin
+    enabled: true
+    rate_limit: 0
+    daily_limit: 0
+    allowed_models: []
+    expires_at: null
+    created_at: "2026-03-27T00:00:00"
+    description: 管理员 Key
+  - key: YOUR_GATEWAY_API_KEY
+    name: claude-code
+    enabled: true
+    rate_limit: 0
+    daily_limit: 0
+    allowed_models: []
+    expires_at: null
+    created_at: "2026-03-30T19:07:17.872640"
+    description: Claude Code IDE proxy key
