@@ -2,6 +2,16 @@
 
 ModelSwitch 是一个 LLM 网关代理，对外暴露 OpenAI 兼容和 Anthropic 兼容 API，后端支持多提供商自动切换。
 
+## 主要特性
+
+- **多协议支持**: 同时暴露 OpenAI 和 Anthropic 兼容 API，支持 Tool Use 双向转换
+- **智能路由**: Chain 模式自动 fallback、Circuit Breaker 熔断、流式首 chunk 探测
+- **配置热更新**: `config.yaml` 基于 watchdog 实时监听，修改即生效
+- **用量追踪**: SQLite 持久化，按服务商/模型/API Key 多维统计
+- **对话日志**: 完整请求/响应记录到 JSONL，Web 端可回放浏览
+- **Web 管理 UI**: 6 个功能 Tab，支持中英文切换
+- **API Key 管理**: 每分钟/每日限流，模型白名单
+
 ## 快速开始
 
 ```bash
@@ -164,11 +174,13 @@ print(response.content[0].text)
 
 访问 `http://localhost:8000/` 进入 Web 管理界面，支持：
 
-- **Providers**: 查看和管理上游提供商
-- **Models**: 配置模型及其适配器链
+- **Providers**: 查看和管理上游提供商，连通性测试
+- **Models**: 配置模型及其适配器链，Chain 逐级测试
 - **API Keys**: 创建、查看、删除 API Key
-- **Usage Stats**: 查看用量统计
-- **Debug Logs**: 查看请求日志
+- **Usage Stats**: 用量统计，按服务商/模型/API Key 分组，支持多级下钻
+- **Debug Logs**: 实时请求日志，支持按级别/Request ID/API Key 过滤
+- **Conversations**: 对话记录查看器，完整输入/输出/Tool Call 回放，消息折叠展开
+- **i18n**: 支持中文/英文界面切换（右上角语言按钮）
 
 ## API Key 管理
 
