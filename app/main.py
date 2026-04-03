@@ -17,6 +17,7 @@ from app.core.config import load_config, save_config
 from app.core.middleware import GatewayMiddleware
 from app.utils.logging import setup_logging
 from app.core.chain_router import ChainRouter
+from app.core.request_queue import get_queue_manager
 from app.services.api_key_service import ApiKeyService
 from app.services.usage_tracker import UsageTracker
 from app.models.config_models import resolve_config_env
@@ -60,6 +61,19 @@ async def lifespan(app: FastAPI):
     # 3. 初始化核心组件
     app.state.chain_router = ChainRouter(config)
     app.state.api_key_service = ApiKeyService(config.api_keys)
+
+    # 3.5 初始化请求队列管理器
+    queue_manager = get_queue_manager()
+    for provider in config.providers:
+        if provider.max_concurrent > 0:
+            queue_manager.register_provider(
+                provider_name=provider.name,
+                max_concurrent=provider.max_concurrent,
+                max_queue_size=provider.max_queue_size,
+                queue_timeout=provider.queue_timeout,
+            )
+    await queue_manager.start()
+    app.state.queue_manager = queue_manager
 
     # 4. 初始化用量统计
     usage_tracker = UsageTracker(
@@ -136,6 +150,9 @@ async def lifespan(app: FastAPI):
 
     flush_task.cancel()
     gauge_task.cancel()
+
+    # 停止请求队列管理器
+    await queue_manager.stop()
 
     await usage_tracker.flush()
     await usage_tracker.close()

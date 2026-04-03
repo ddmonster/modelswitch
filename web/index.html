@@ -18,6 +18,7 @@
         <button class="tab active" onclick="switchTab('providers')" data-i18n="tab.providers">供应商管理</button>
         <button class="tab" onclick="switchTab('models')" data-i18n="tab.models">模型配置</button>
         <button class="tab" onclick="switchTab('keys')" data-i18n="tab.keys">API Key</button>
+        <button class="tab" onclick="switchTab('queue')" data-i18n="tab.queue">队列监控</button>
         <button class="tab" onclick="switchTab('usage')" data-i18n="tab.usage">用量统计</button>
         <button class="tab" onclick="switchTab('logs')" data-i18n="tab.logs">调试日志</button>
         <button class="tab" onclick="switchTab('conversations')" data-i18n="tab.conversations">对话记录</button>
@@ -30,6 +31,29 @@
             <button class="btn" onclick="loadConfig()" data-i18n="common.refresh">刷新</button>
         </div>
         <div id="providers-list"></div>
+        <template id="provider-card-template">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title"></span>
+                    <span class="card-actions">
+                        <button class="btn btn-sm btn-edit" data-i18n="common.edit">编辑</button>
+                        <button class="btn btn-sm btn-danger" data-i18n="common.delete">删除</button>
+                    </span>
+                </div>
+                <div class="card-body">
+                    <table>
+                        <tr><td data-i18n="provider.td.protocol">协议</td><td><span class="badge badge-blue protocol-badge"></span></td></tr>
+                        <tr><td>Base URL</td><td class="base-url"></td></tr>
+                        <tr><td>API Key</td><td class="api-key-mask"></td></tr>
+                        <tr class="headers-row" style="display:none"><td>Headers</td><td class="headers-content"></td></tr>
+                        <tr class="queue-row" style="display:none"><td data-i18n="provider.td.queue">队列</td><td>
+                            <span class="badge badge-orange" data-i18n="provider.queue.enabled">已启用</span>
+                            <span class="queue-info"></span>
+                        </td></tr>
+                    </table>
+                </div>
+            </div>
+        </template>
         <div id="provider-form" class="modal" style="display:none">
             <div class="modal-content">
                 <h3 id="provider-form-title" data-i18n="provider.formTitle.add">新建供应商</h3>
@@ -56,6 +80,21 @@
                 <div class="form-group">
                     <label data-i18n="provider.label.headers">自定义 Headers (JSON)</label>
                     <textarea id="pf-headers" rows="2" placeholder='{"X-Custom": "value"}'>{}</textarea>
+                </div>
+                <div class="form-section">
+                    <h4 data-i18n="provider.section.queue">请求队列配置</h4>
+                    <div class="form-group">
+                        <label data-i18n="provider.label.maxConcurrent">最大并发数 (0=不限制)</label>
+                        <input id="pf-max-concurrent" type="number" value="0" min="0" placeholder="0">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="provider.label.maxQueueSize">最大队列长度</label>
+                        <input id="pf-max-queue-size" type="number" value="100" min="1" placeholder="100">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="provider.label.queueTimeout">队列等待超时 (秒)</label>
+                        <input id="pf-queue-timeout" type="number" value="300" min="1" placeholder="300">
+                    </div>
                 </div>
                 <div class="form-actions">
                     <button class="btn btn-primary" onclick="saveProvider()" data-i18n="common.save">保存</button>
@@ -153,6 +192,19 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Tab: Queue -->
+    <div id="tab-queue" class="tab-content">
+        <div class="toolbar">
+            <button class="btn" onclick="loadQueueStats()" data-i18n="common.refresh">刷新</button>
+            <label>
+                <input type="checkbox" id="queue-auto-refresh" onchange="toggleQueueAutoRefresh()"> 
+                <span data-i18n="queue.label.autoRefresh">自动刷新 (5s)</span>
+            </label>
+        </div>
+        <div id="queue-summary" class="queue-summary"></div>
+        <div id="queue-list"></div>
     </div>
 
     <!-- Tab: Usage -->

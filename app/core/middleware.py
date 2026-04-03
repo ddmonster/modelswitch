@@ -162,7 +162,11 @@ class GatewayMiddleware:
         if "state" not in scope:
             scope["state"] = {}
         scope["state"]["api_key"] = api_key
-        scope["state"]["api_key_name"] = key_config.get("name", "")
+        key_name = key_config.get("name", "")
+        if not key_name:
+            # fallback: mask key as sk-****xxxx
+            key_name = api_key[:3] + "****" + api_key[-4:] if len(api_key) > 7 else api_key[:3] + "****"
+        scope["state"]["api_key_name"] = key_name
         scope["state"]["api_key_config"] = key_config
 
         # 活跃请求计数

@@ -17,12 +17,20 @@ providers:
     api_key: YOUR_DASHSCOPE_API_KEY
     custom_headers: {}
     enabled: true
+    # 请求队列配置（可选）
+    max_concurrent: 0      # 最大并发请求数，0=不限制，1=单并发
+    max_queue_size: 100    # 最大队列长度
+    queue_timeout: 300     # 队列等待超时时间（秒）
   - name: glm-plan
     provider: openai
     base_url: https://open.bigmodel.cn/api/paas/v4
     api_key: YOUR_GLMPLAN_API_KEY
     custom_headers: {}
     enabled: true
+    # 请求队列配置（可选）
+    max_concurrent: 0      # 最大并发请求数，0=不限制
+    max_queue_size: 100    # 最大队列长度
+    queue_timeout: 300     # 队列等待超时时间（秒）
 models:
   glm-5:
     mode: chain

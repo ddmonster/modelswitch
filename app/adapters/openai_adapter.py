@@ -8,6 +8,7 @@ from openai import AsyncOpenAI, APITimeoutError, APIStatusError
 
 from app.adapters.base import AdapterResponse, BaseAdapter
 from app.models.config_models import ProviderConfig
+from app.core.request_queue import get_queue_manager
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,17 @@ class OpenAIAdapter(BaseAdapter):
             api_key=provider_config.api_key,
             base_url=provider_config.base_url,
         )
+        self._queue_manager = get_queue_manager()
+        self._use_queue = provider_config.max_concurrent > 0
+        
+        # 如果配置了并发限制，注册到队列管理器
+        if self._use_queue:
+            self._queue_manager.register_provider(
+                provider_name=provider_config.name,
+                max_concurrent=provider_config.max_concurrent,
+                max_queue_size=provider_config.max_queue_size,
+                queue_timeout=provider_config.queue_timeout,
+            )
 
     async def chat_completion(
         self,
@@ -45,6 +57,32 @@ class OpenAIAdapter(BaseAdapter):
             f"model={model_name} api_base={self.provider.base_url} "
             f"stream={stream} timeout={timeout}"
         )
+
+        # 如果配置了队列，通过队列执行
+        if self._use_queue:
+            logger.debug(f"[{request_id}] 使用请求队列: {self.name}")
+            return await self._queue_manager.execute(
+                self.name,
+                self._do_chat_completion,
+                model_name, messages, stream, timeout, request_id,
+                **kwargs
+            )
+
+        # 直接执行
+        return await self._do_chat_completion(
+            model_name, messages, stream, timeout, request_id, **kwargs
+        )
+
+    async def _do_chat_completion(
+        self,
+        model_name: str,
+        messages: list,
+        stream: bool = False,
+        timeout: int = 60,
+        request_id: str = "",
+        **kwargs: Any,
+    ) -> AdapterResponse:
+        start = time.monotonic()
 
         try:
             # 分离标准参数和扩展参数（DashScope 等可能有非标准参数如 top_k）

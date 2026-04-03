@@ -29,6 +29,10 @@ class ProviderConfig(BaseModel):
     api_key: str = Field(default="", description="API Key，支持 ${ENV_VAR}")
     custom_headers: Dict[str, str] = Field(default_factory=dict, description="自定义请求头")
     enabled: bool = True
+    # 请求队列配置
+    max_concurrent: int = Field(default=0, description="最大并发请求数，0=不限制")
+    max_queue_size: int = Field(default=100, description="最大队列长度")
+    queue_timeout: float = Field(default=300.0, description="队列等待超时时间（秒）")
 
 
 class ModelAdapterRef(BaseModel):

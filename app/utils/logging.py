@@ -33,8 +33,12 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=False)
 
 
-def setup_logging(log_level: str = "INFO", log_dir: str = "logs",
-                  max_bytes: int = 104857600, backup_count: int = 30) -> None:
+def setup_logging(
+    log_level: str = "INFO",
+    log_dir: str = "logs",
+    max_bytes: int = 104857600,
+    backup_count: int = 30,
+) -> None:
     """配置日志系统"""
     Path(log_dir).mkdir(parents=True, exist_ok=True)
 
@@ -52,6 +56,7 @@ def setup_logging(log_level: str = "INFO", log_dir: str = "logs",
 
     # 文件 handler（按天轮转）
     from logging.handlers import RotatingFileHandler
+
     file_handler = RotatingFileHandler(
         f"{log_dir}/gateway.log",
         maxBytes=max_bytes,
@@ -78,13 +83,15 @@ def setup_logging(log_level: str = "INFO", log_dir: str = "logs",
 
 def add_log_to_buffer(request_id: str, level: str, message: str, **extra) -> None:
     """添加日志到内存缓冲"""
-    _log_buffer.append({
-        "timestamp": datetime.now().isoformat(),
-        "request_id": request_id,
-        "level": level,
-        "message": message,
-        **extra,
-    })
+    _log_buffer.append(
+        {
+            "timestamp": datetime.now().isoformat(),
+            "request_id": request_id,
+            "level": level,
+            "message": message,
+            **extra,
+        }
+    )
 
 
 def get_log_buffer() -> list:
@@ -92,9 +99,16 @@ def get_log_buffer() -> list:
     return list(_log_buffer)
 
 
+def clear_log_buffer() -> None:
+    """清空日志缓冲区（用于测试）"""
+    _log_buffer.clear()
+
+
 def get_logs_filtered(
-    tail: int = 100, level: Optional[str] = None,
-    request_id: Optional[str] = None, api_key: Optional[str] = None
+    tail: int = 100,
+    level: Optional[str] = None,
+    request_id: Optional[str] = None,
+    api_key: Optional[str] = None,
 ) -> list:
     """带过滤条件的日志查询"""
     logs = list(_log_buffer)
@@ -133,7 +147,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
                 f"error={e} latency={latency:.0f}ms",
                 extra={"request_id": request_id},
             )
-            return JSONResponse(status_code=500, content={"error": {"message": "Internal server error"}})
+            return JSONResponse(
+                status_code=500, content={"error": {"message": "Internal server error"}}
+            )
 
         latency = (time.monotonic() - start) * 1000
 

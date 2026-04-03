@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any
 
-from openai import APITimeoutError, APIStatusError
+from openai import APIStatusError, APITimeoutError
 
 from app.adapters.base import AdapterResponse, BaseAdapter
 from app.models.config_models import ProviderConfig
@@ -19,6 +19,7 @@ class AnthropicAdapter(BaseAdapter):
     def __init__(self, provider_config: ProviderConfig):
         super().__init__(provider_config)
         from anthropic import AsyncAnthropic
+
         kwargs: dict[str, Any] = {"api_key": provider_config.api_key}
         if provider_config.base_url:
             kwargs["base_url"] = provider_config.base_url
@@ -33,7 +34,8 @@ class AnthropicAdapter(BaseAdapter):
         request_id: str = "",
         **kwargs: Any,
     ) -> AdapterResponse:
-        from anthropic import APITimeoutError as ATimeout, APIStatusError as AStatus
+        from anthropic import APIStatusError as AStatus
+        from anthropic import APITimeoutError as ATimeout
 
         start = time.monotonic()
 
@@ -96,15 +98,23 @@ class AnthropicAdapter(BaseAdapter):
                 raise APITimeoutError(str(e))
             except AStatus as e:
                 raise APIStatusError(
-                    str(e), response=e.response, body=e.body  # type: ignore[arg-type]
+                    str(e),
+                    response=e.response,
+                    body=e.body,  # type: ignore[arg-type]
                 )
 
         except APITimeoutError as e:
             latency = (time.monotonic() - start) * 1000
-            logger.warning(f"[{request_id}] api_timeout provider={self.name} latency={latency:.0f}ms")
+            logger.warning(
+                f"[{request_id}] api_timeout provider={self.name} latency={latency:.0f}ms"
+            )
             return AdapterResponse(
-                status_code=504, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+                status_code=504,
+                success=False,
+                adapter_name=self.name,
+                model_name=model_name,
+                latency_ms=latency,
+                error=str(e),
             )
         except APIStatusError as e:
             latency = (time.monotonic() - start) * 1000
@@ -113,15 +123,23 @@ class AnthropicAdapter(BaseAdapter):
                 f"status={e.status_code} error={e}"
             )
             return AdapterResponse(
-                status_code=e.status_code, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+                status_code=e.status_code,
+                success=False,
+                adapter_name=self.name,
+                model_name=model_name,
+                latency_ms=latency,
+                error=str(e),
             )
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
             logger.error(f"[{request_id}] api_exception provider={self.name} error={e}")
             return AdapterResponse(
-                status_code=502, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+                status_code=502,
+                success=False,
+                adapter_name=self.name,
+                model_name=model_name,
+                latency_ms=latency,
+                error=str(e),
             )
 
     async def _non_stream(
@@ -142,17 +160,19 @@ class AnthropicAdapter(BaseAdapter):
         )
 
         return AdapterResponse(
-            status_code=200, success=True, body=openai_resp,
-            adapter_name=self.name, model_name=model_name,
-            latency_ms=latency, usage=usage,
+            status_code=200,
+            success=True,
+            body=openai_resp,
+            adapter_name=self.name,
+            model_name=model_name,
+            latency_ms=latency,
+            usage=usage,
         )
 
     async def _stream(
         self, create_kwargs: dict, model_name: str, start: float, request_id: str
     ) -> AdapterResponse:
-        raw_stream = await self._client.messages.create(
-            stream=True, **create_kwargs
-        )
+        raw_stream = await self._client.messages.create(stream=True, **create_kwargs)
 
         async def stream_generator():
             tool_call_index = -1
@@ -163,7 +183,7 @@ class AnthropicAdapter(BaseAdapter):
                         event, model_name, tool_call_index
                     )
                     if chunk is not None:
-                        if isinstance(chunk, dict) and chunk.get("_tc_index_bump"):
+                        if isinstance(chunk, dict) and "_tc_index_bump" in chunk:
                             tool_call_index = chunk.pop("_tc_index_bump")
                         chunk_count += 1
                         yield chunk
@@ -182,9 +202,11 @@ class AnthropicAdapter(BaseAdapter):
 
         latency = (time.monotonic() - start) * 1000
         return AdapterResponse(
-            status_code=200, success=True,
+            status_code=200,
+            success=True,
             stream=stream_generator(),
-            adapter_name=self.name, model_name=model_name,
+            adapter_name=self.name,
+            model_name=model_name,
             latency_ms=latency,
         )
 
@@ -198,8 +220,14 @@ def _openai_to_anthropic_messages(messages: list):
     anthropic_messages: list[dict] = []
 
     for msg in messages:
-        role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
-        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        role = (
+            msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
+        )
+        content = (
+            msg.get("content", "")
+            if isinstance(msg, dict)
+            else getattr(msg, "content", "")
+        )
 
         if role == "system":
             system_parts.append({"type": "text", "text": content or ""})
@@ -207,7 +235,8 @@ def _openai_to_anthropic_messages(messages: list):
             anthropic_messages.append({"role": "user", "content": content})
         elif role == "assistant":
             tool_calls = (
-                msg.get("tool_calls") if isinstance(msg, dict)
+                msg.get("tool_calls")
+                if isinstance(msg, dict)
                 else getattr(msg, "tool_calls", None)
             ) or []
             if tool_calls:
@@ -215,34 +244,51 @@ def _openai_to_anthropic_messages(messages: list):
                 if content:
                     blocks.append({"type": "text", "text": content})
                 for tc in tool_calls:
-                    func = tc.get("function", {}) if isinstance(tc, dict) else tc.function
-                    args = func.get("arguments", "{}") if isinstance(func, dict) else func.arguments
+                    func = (
+                        tc.get("function", {}) if isinstance(tc, dict) else tc.function
+                    )
+                    args = (
+                        func.get("arguments", "{}")
+                        if isinstance(func, dict)
+                        else func.arguments
+                    )
                     name = func.get("name", "") if isinstance(func, dict) else func.name
                     tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
                     try:
                         input_data = json.loads(args)
                     except (json.JSONDecodeError, TypeError):
                         input_data = {}
-                    blocks.append({
-                        "type": "tool_use", "id": tc_id,
-                        "name": name, "input": input_data,
-                    })
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": tc_id,
+                            "name": name,
+                            "input": input_data,
+                        }
+                    )
                 anthropic_messages.append({"role": "assistant", "content": blocks})
             else:
-                anthropic_messages.append({"role": "assistant", "content": content or ""})
+                anthropic_messages.append(
+                    {"role": "assistant", "content": content or ""}
+                )
         elif role == "tool":
             tool_call_id = (
-                msg.get("tool_call_id", "") if isinstance(msg, dict)
+                msg.get("tool_call_id", "")
+                if isinstance(msg, dict)
                 else getattr(msg, "tool_call_id", "")
             )
-            anthropic_messages.append({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_call_id,
-                    "content": content or "",
-                }],
-            })
+            anthropic_messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": tool_call_id,
+                            "content": content or "",
+                        }
+                    ],
+                }
+            )
 
     return system_parts or None, anthropic_messages
 
@@ -256,17 +302,21 @@ def _anthropic_response_to_openai(response) -> dict:
         if block.type == "text":
             content_text = block.text
         elif block.type == "tool_use":
-            tool_calls.append({
-                "id": block.id,
-                "type": "function",
-                "function": {
-                    "name": block.name,
-                    "arguments": json.dumps(block.input, ensure_ascii=False),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": block.id,
+                    "type": "function",
+                    "function": {
+                        "name": block.name,
+                        "arguments": json.dumps(block.input, ensure_ascii=False),
+                    },
+                }
+            )
 
     finish_reason = {
-        "end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls",
+        "end_turn": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_calls",
     }.get(response.stop_reason, "stop")
 
     message: dict[str, Any] = {"role": "assistant", "content": content_text or None}
@@ -296,12 +346,15 @@ def _anthropic_event_to_openai_chunk(event, model: str, current_tc_index: int):
             return _make_chunk(model, content="")
         elif block.type == "tool_use":
             new_index = current_tc_index + 1
-            chunk = _make_chunk(model, tool_call={
-                "index": new_index,
-                "id": block.id,
-                "type": "function",
-                "function": {"name": block.name, "arguments": ""},
-            })
+            chunk = _make_chunk(
+                model,
+                tool_call={
+                    "index": new_index,
+                    "id": block.id,
+                    "type": "function",
+                    "function": {"name": block.name, "arguments": ""},
+                },
+            )
             chunk["_tc_index_bump"] = new_index
             return chunk
 
@@ -310,15 +363,20 @@ def _anthropic_event_to_openai_chunk(event, model: str, current_tc_index: int):
         if delta.type == "text_delta":
             return _make_chunk(model, content=delta.text)
         elif delta.type == "input_json_delta":
-            return _make_chunk(model, tool_call={
-                "index": max(current_tc_index, 0),
-                "function": {"arguments": delta.partial_json},
-            })
+            return _make_chunk(
+                model,
+                tool_call={
+                    "index": max(current_tc_index, 0),
+                    "function": {"arguments": delta.partial_json},
+                },
+            )
 
     elif event_type == "message_delta":
         stop_reason = event.delta.stop_reason
         finish_reason = {
-            "end_turn": "stop", "max_tokens": "length", "tool_use": "tool_calls",
+            "end_turn": "stop",
+            "max_tokens": "length",
+            "tool_use": "tool_calls",
         }.get(stop_reason, "stop")
         return _make_chunk(model, finish_reason=finish_reason)
 

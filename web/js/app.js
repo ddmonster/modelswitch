@@ -7,6 +7,7 @@ function switchTab(name) {
 
     if (name === 'providers' || name === 'models') loadConfig();
     if (name === 'keys') loadKeys();
+    if (name === 'queue') loadQueueStats();
     if (name === 'usage') loadUsage();
     if (name === 'logs') loadLogs();
     if (name === 'conversations') loadConversations();
@@ -40,6 +41,7 @@ function renderProviders(providers) {
             <div class="card-header">
                 <span class="card-title">${esc(p.name)}</span>
                 <span class="badge ${p.enabled ? 'badge-green' : 'badge-red'}">${p.enabled ? t('common.enabled') : t('common.disabled')}</span>
+                ${p.max_concurrent > 0 ? `<span class="badge badge-orange" title="${t('provider.queue.enabled')}">Q</span>` : ''}
             </div>
             <div class="card-body">
                 <table>
@@ -47,6 +49,14 @@ function renderProviders(providers) {
                     <tr><td>Base URL</td><td>${esc(p.base_url)}</td></tr>
                     <tr><td>API Key</td><td>${esc(p.api_key).substring(0, 12)}***</td></tr>
                     ${p.custom_headers && Object.keys(p.custom_headers).length ? `<tr><td>Headers</td><td>${esc(JSON.stringify(p.custom_headers))}</td></tr>` : ''}
+                    ${p.max_concurrent > 0 ? `
+                    <tr><td>${t('provider.td.queue')}</td><td>
+                        <span class="badge badge-orange">${t('provider.queue.enabled')}</span>
+                        <span class="queue-info" style="margin-left:8px;color:#666;font-size:12px">
+                            并发: ${p.max_concurrent} | 队列: ${p.max_queue_size} | 超时: ${p.queue_timeout}s
+                        </span>
+                    </td></tr>
+                    ` : ''}
                 </table>
             </div>
             <div class="card-actions" style="margin-top:8px">
@@ -68,6 +78,9 @@ function showAddProvider() {
     document.getElementById('pf-base-url').value = '';
     document.getElementById('pf-api-key').value = '';
     document.getElementById('pf-headers').value = '{}';
+    document.getElementById('pf-max-concurrent').value = '0';
+    document.getElementById('pf-max-queue-size').value = '100';
+    document.getElementById('pf-queue-timeout').value = '300';
     document.getElementById('provider-form').style.display = 'flex';
 }
 
@@ -82,6 +95,9 @@ function editProvider(name) {
         document.getElementById('pf-base-url').value = p.base_url;
         document.getElementById('pf-api-key').value = p.api_key;
         document.getElementById('pf-headers').value = JSON.stringify(p.custom_headers || {});
+        document.getElementById('pf-max-concurrent').value = p.max_concurrent || 0;
+        document.getElementById('pf-max-queue-size').value = p.max_queue_size || 100;
+        document.getElementById('pf-queue-timeout').value = p.queue_timeout || 300;
         document.getElementById('provider-form').style.display = 'flex';
     });
 }
@@ -100,6 +116,9 @@ async function saveProvider() {
         base_url: document.getElementById('pf-base-url').value.trim(),
         api_key: document.getElementById('pf-api-key').value.trim(),
         custom_headers: headers, enabled: true,
+        max_concurrent: parseInt(document.getElementById('pf-max-concurrent').value) || 0,
+        max_queue_size: parseInt(document.getElementById('pf-max-queue-size').value) || 100,
+        queue_timeout: parseFloat(document.getElementById('pf-queue-timeout').value) || 300,
     };
     if (original) {
         await api('PUT', `/api/config/providers/${encodeURIComponent(original)}`, body);
@@ -829,6 +848,108 @@ function _roleLabel(role) {
 }
 function _roleClass(role) {
     return { user: 'user', assistant: 'assistant', system: 'system', tool: 'tool' }[role] || 'user';
+}
+
+// ========== Queue Stats ==========
+let queueRefreshTimer = null;
+
+async function loadQueueStats() {
+    const data = await api('GET', '/api/config/queue-stats');
+    renderQueueStats(data);
+}
+
+function renderQueueStats(data) {
+    const summaryEl = document.getElementById('queue-summary');
+    const listEl = document.getElementById('queue-list');
+
+    if (!data.queues || Object.keys(data.queues).length === 0) {
+        summaryEl.innerHTML = `<p style="color:#999">${t('queue.empty')}</p>`;
+        listEl.innerHTML = '';
+        return;
+    }
+
+    // 渲染汇总信息
+    const activeQueues = data.active_queues || 0;
+    const totalProviders = data.total_providers || 0;
+    summaryEl.innerHTML = `
+        <div class="queue-summary-stats">
+            <div class="stat-item">
+                <span class="stat-value">${activeQueues}</span>
+                <span class="stat-label">${t('queue.stat.activeQueues')}</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value">${totalProviders}</span>
+                <span class="stat-label">${t('queue.stat.totalProviders')}</span>
+            </div>
+        </div>
+    `;
+
+    // 渲染队列详情
+    const queues = data.queues || {};
+    listEl.innerHTML = Object.entries(queues).map(([name, q]) => {
+        const isActive = q.max_concurrent > 0;
+        const queuePercent = Math.min(100, (q.current_queue_size / q.max_queue_size) * 100);
+        const queueBarColor = queuePercent > 80 ? 'red' : (queuePercent > 50 ? 'orange' : 'green');
+
+        return `
+        <div class="card queue-card ${isActive ? 'queue-active' : 'queue-inactive'}">
+            <div class="card-header">
+                <span class="card-title">${esc(name)}</span>
+                ${isActive
+                    ? `<span class="badge badge-orange">${t('provider.queue.enabled')}</span>`
+                    : `<span class="badge badge-gray">${t('provider.queue.disabled')}</span>`
+                }
+            </div>
+            <div class="card-body">
+                <div class="queue-metrics">
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.maxConcurrent')}:</span>
+                        <span class="metric-value">${q.max_concurrent}</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.activeRequests')}:</span>
+                        <span class="metric-value">${q.active_requests || 0}</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.queueSize')}:</span>
+                        <span class="metric-value">${q.current_queue_size} / ${q.max_queue_size}</span>
+                    </div>
+                    ${isActive ? `
+                    <div class="queue-progress-bar">
+                        <div class="queue-progress-fill" style="width: ${queuePercent}%; background: ${queueBarColor}"></div>
+                    </div>
+                    ` : ''}
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.totalRequests')}:</span>
+                        <span class="metric-value">${q.total_requests || 0}</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.rejectedRequests')}:</span>
+                        <span class="metric-value ${(q.rejected_requests || 0) > 0 ? 'text-red' : ''}">${q.rejected_requests || 0}</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.avgWaitTime')}:</span>
+                        <span class="metric-value">${(q.avg_wait_time || 0).toFixed(2)}s</span>
+                    </div>
+                    <div class="metric-row">
+                        <span class="metric-label">${t('queue.metric.queueTimeout')}:</span>
+                        <span class="metric-value">${q.queue_timeout || 300}s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        `;
+    }).join('');
+}
+
+function toggleQueueAutoRefresh() {
+    const autoRefresh = document.getElementById('queue-auto-refresh').checked;
+    if (autoRefresh && !queueRefreshTimer) {
+        queueRefreshTimer = setInterval(loadQueueStats, 5000);
+    } else if (!autoRefresh && queueRefreshTimer) {
+        clearInterval(queueRefreshTimer);
+        queueRefreshTimer = null;
+    }
 }
 
 // Page load

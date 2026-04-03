@@ -55,6 +55,9 @@ class CreateProviderRequest(BaseModel):
     api_key: str = ""
     custom_headers: dict = {}
     enabled: bool = True
+    max_concurrent: int = 0
+    max_queue_size: int = 100
+    queue_timeout: float = 300.0
 
 
 class UpdateProviderRequest(BaseModel):
@@ -63,6 +66,9 @@ class UpdateProviderRequest(BaseModel):
     api_key: Optional[str] = None
     custom_headers: Optional[dict] = None
     enabled: Optional[bool] = None
+    max_concurrent: Optional[int] = None
+    max_queue_size: Optional[int] = None
+    queue_timeout: Optional[float] = None
 
 
 @router.get("/providers")
@@ -195,15 +201,44 @@ async def health(request: Request):
     }
 
 
+# ========== Queue Stats ==========
+
+@router.get("/queue-stats")
+async def queue_stats(request: Request):
+    """获取请求队列统计信息"""
+    from app.core.request_queue import get_queue_manager
+    queue_manager = get_queue_manager()
+    stats = queue_manager.get_all_stats()
+    return {
+        "queues": stats,
+        "total_providers": len(stats),
+        "active_queues": sum(1 for s in stats.values() if s.get("max_concurrent", 0) > 0),
+    }
+
+
 async def _reload(request: Request, config):
     """重新加载配置并持久化"""
     from app.core.config import save_config
     from app.models.config_models import resolve_config_env
+    from app.core.request_queue import get_queue_manager
 
     config = resolve_config_env(config)
     request.app.state.config = config
     request.app.state.chain_router.reload_config(config)
     request.app.state.api_key_service.reload(config.api_keys)
+
+    # 更新队列管理器配置
+    queue_manager = get_queue_manager()
+    for provider in config.providers:
+        if provider.max_concurrent > 0:
+            # 重新注册或更新 provider 队列配置
+            queue_manager.register_provider(
+                provider_name=provider.name,
+                max_concurrent=provider.max_concurrent,
+                max_queue_size=provider.max_queue_size,
+                queue_timeout=provider.queue_timeout,
+            )
+
     # Update middleware config by walking the middleware stack
     from app.core.middleware import GatewayMiddleware
     mw = request.app.middleware_stack
