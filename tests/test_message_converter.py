@@ -426,6 +426,75 @@ class TestOpenaiStreamToAnthropic:
         assert '"index": 0' in text
         assert '"index": 1' in text
 
+    @pytest.mark.asyncio
+    async def test_reasoning_content_emits_thinking_block(self):
+        """reasoning_content in delta should emit thinking type content blocks."""
+        async def fake_stream():
+            yield {"choices": [{"delta": {"role": "assistant", "reasoning_content": "Let me think"}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {"reasoning_content": " about this..."}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {"content": "The answer is 42"}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(fake_stream(), "test-model"):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        # thinking block emitted
+        assert '"type": "thinking"' in text
+        assert '"thinking_delta"' in text
+        assert "Let me think" in text
+        assert "about this..." in text
+        # text block emitted at index 1 (after thinking at index 0)
+        assert '"type": "text_delta"' in text
+        assert "The answer is 42" in text
+        # correct block ordering: thinking at 0, text at 1
+        lines = [l for l in text.split("\n") if l.startswith("data: ")]
+        block_starts = [l for l in lines if "content_block_start" in l]
+        assert len(block_starts) == 2  # thinking + text
+        assert '"index": 0' in block_starts[0]  # thinking first
+        assert '"index": 1' in block_starts[1]  # text second
+
+    @pytest.mark.asyncio
+    async def test_reasoning_only_stream_emits_thinking(self):
+        """Stream with only reasoning_content (no content) still emits thinking block."""
+        async def fake_stream():
+            yield {"choices": [{"delta": {"role": "assistant", "reasoning_content": "Thinking..."}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(fake_stream(), "test-model"):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        assert '"type": "thinking"' in text
+        assert "Thinking..." in text
+        # No text block should be emitted
+        assert '"type": "text"' not in text
+
+    @pytest.mark.asyncio
+    async def test_thinking_then_tool_call_indexing(self):
+        """thinking(0) + tool(1), no text block."""
+        async def fake_stream():
+            yield {"choices": [{"delta": {"reasoning_content": "Need to search"}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "search", "arguments": ""}}]}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"q":"x"}'}}]}, "finish_reason": None}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(fake_stream(), "test-model"):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        # thinking at index 0, tool_use at index 1
+        lines = [l for l in text.split("\n") if l.startswith("data: ")]
+        block_starts = [l for l in lines if "content_block_start" in l]
+        assert len(block_starts) == 2
+        assert '"index": 0' in block_starts[0]
+        assert '"type": "thinking"' in block_starts[0]
+        assert '"index": 1' in block_starts[1]
+        assert '"type": "tool_use"' in block_starts[1]
+
 
 class TestConvertOpenaiToAnthropicResponse:
     """测试 _convert_openai_to_anthropic_response 的 tool_calls 转换"""

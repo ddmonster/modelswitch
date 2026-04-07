@@ -203,7 +203,7 @@ class TestZedCompatibility:
 
         # Reasoning buffered + content chunk + finish chunk = 3
         assert len(collected) == 3
-        assert collected[0]["choices"][0]["delta"]["content"] == "Let me think about this..."
+        assert collected[0]["choices"][0]["delta"]["reasoning_content"] == "Let me think about this..."
         assert collected[1]["choices"][0]["delta"]["content"] == "The answer is 42"
 
     @pytest.mark.asyncio
@@ -240,7 +240,7 @@ class TestZedCompatibility:
         assert len(collected) == 2
         # Last chunk should have reasoning as content
         reasoning_chunk = collected[1] if isinstance(collected[1], dict) else collected[1].model_dump()
-        assert reasoning_chunk["choices"][0]["delta"]["content"] == "Thinking..."
+        assert reasoning_chunk["choices"][0]["delta"]["reasoning_content"] == "Thinking..."
 
 
 # ========== OpenCode Compatibility ==========

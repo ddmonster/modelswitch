@@ -365,6 +365,8 @@ def _anthropic_event_to_openai_chunk(event, model: str, current_tc_index: int):
         block = event.content_block
         if block.type == "text":
             return _make_chunk(model, content="")
+        elif block.type == "thinking":
+            return None  # thinking blocks 不需要转换为 OpenAI 格式
         elif block.type == "tool_use":
             new_index = current_tc_index + 1
             chunk = _make_chunk(
@@ -383,6 +385,8 @@ def _anthropic_event_to_openai_chunk(event, model: str, current_tc_index: int):
         delta = event.delta
         if delta.type == "text_delta":
             return _make_chunk(model, content=delta.text)
+        elif delta.type == "thinking_delta":
+            return None  # thinking deltas 不需要转换为 OpenAI 格式
         elif delta.type == "input_json_delta":
             return _make_chunk(
                 model,

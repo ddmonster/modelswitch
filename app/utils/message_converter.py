@@ -144,6 +144,8 @@ async def openai_stream_to_anthropic(
     # 块追踪
     open_block_index = -1        # 当前打开的块索引，-1 表示无
     text_block_opened = False     # 文本块是否已打开（索引 0）
+    thinking_block_opened = False # thinking 块是否已打开
+    thinking_block_index = -1     # thinking 块索引
     tool_calls_map = {}           # {openai_tc_index: {"id", "name", "block_index"}}
     tool_block_counter = 0        # 已创建的 tool 块数量
 
@@ -173,6 +175,7 @@ async def openai_stream_to_anthropic(
 
             delta = choices[0].get("delta", {})
             content = delta.get("content")
+            reasoning_content = delta.get("reasoning_content")
             finish = choices[0].get("finish_reason")
 
             # 生成 message_start（首次）
@@ -209,11 +212,12 @@ async def openai_stream_to_anthropic(
                         func = tc_delta.get("function", {})
                         tc_name = func.get("name", "")
 
-                        # 块索引：文本块在 0，tool 块从 1（或 0 如果没有文本）
+                        # 块索引：thinking(0) + text(1) + tool(N)，无 thinking 时 text(0) + tool(N)
+                        block_idx = tool_block_counter
+                        if thinking_block_opened:
+                            block_idx += 1
                         if text_block_opened:
-                            block_idx = 1 + tool_block_counter
-                        else:
-                            block_idx = tool_block_counter
+                            block_idx += 1
                         tool_block_counter += 1
 
                         tool_calls_map[tc_index] = {
@@ -241,6 +245,24 @@ async def openai_stream_to_anthropic(
                             "delta": {"type": "input_json_delta", "partial_json": args_fragment},
                         })
 
+            # 处理 reasoning_content -> thinking 块
+            if reasoning_content is not None:
+                if not thinking_block_opened:
+                    thinking_block_opened = True
+                    thinking_block_index = 0
+                    open_block_index = 0
+                    yield _sse("content_block_start", {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "thinking", "thinking": ""},
+                    })
+
+                yield _sse("content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": reasoning_content},
+                })
+
             # 处理文本 content
             if content is not None:
                 if not text_block_opened:
@@ -248,16 +270,18 @@ async def openai_stream_to_anthropic(
                     close_ev = _close_open_block()
                     if close_ev:
                         yield close_ev
-                    open_block_index = 0
+                    # thinking 块在 0，text 块在 1；无 thinking 时 text 在 0
+                    text_idx = 1 if thinking_block_opened else 0
+                    open_block_index = text_idx
                     yield _sse("content_block_start", {
                         "type": "content_block_start",
-                        "index": 0,
+                        "index": text_idx,
                         "content_block": {"type": "text", "text": ""},
                     })
 
                 yield _sse("content_block_delta", {
                     "type": "content_block_delta",
-                    "index": 0,
+                    "index": text_idx,
                     "delta": {"type": "text_delta", "text": content},
                 })
                 total_output_tokens += 1

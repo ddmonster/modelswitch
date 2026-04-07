@@ -35,7 +35,7 @@ def _make_reasoning_chunk(ref_chunk, model: str, reasoning_text: str):
         "model": model,
         "choices": [{
             "index": 0,
-            "delta": {"role": "assistant", "content": reasoning_text},
+            "delta": {"role": "assistant", "reasoning_content": reasoning_text},
         }],
     }
 

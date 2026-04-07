@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -90,11 +89,6 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
             "X-Adapter-Name": result.adapter_name,
         },
     )
-
-
-async def _single_chunk_iter(chunk) -> AsyncIterator:
-    """将单个 chunk 包装为 async iterator"""
-    yield chunk
 
 
 def _convert_openai_to_anthropic_response(resp_data: dict, model: str) -> dict:
@@ -214,17 +208,27 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
             yield chunk
 
     async def generate():
-        try:
-            async for chunk in capturing_stream(result.stream):
+        stream_error = None
+
+        async def safe_stream(raw_stream):
+            """拦截 _stream_error，正常 chunk 透传"""
+            nonlocal stream_error
+            async for chunk in raw_stream:
                 if isinstance(chunk, dict) and chunk.get("_stream_error"):
-                    err = chunk.get("error", chunk)
-                    error_data = {"type": "error", "error": {"type": "api_error", "message": err.get("message", "All adapters failed")}}
-                    yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+                    stream_error = chunk.get("error", chunk)
                     return
-                async for anth_chunk in openai_stream_to_anthropic(
-                    _single_chunk_iter(chunk), model, request_id
-                ):
-                    yield anth_chunk
+                yield chunk
+
+        try:
+            async for anth_chunk in openai_stream_to_anthropic(
+                capturing_stream(safe_stream(result.stream)), model, request_id
+            ):
+                yield anth_chunk
+
+            # 如果所有 adapter 失败，发送错误事件
+            if stream_error:
+                error_data = {"type": "error", "error": {"type": "api_error", "message": stream_error.get("message", "All adapters failed")}}
+                yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         except Exception as e:
             error_data = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
