@@ -1099,7 +1099,7 @@ function renderConvList(data) {
         : "";
       const date = item.timestamp ? item.timestamp.split("T")[0] : "";
       const active =
-        item.line === AppState.conversations.selectedLine ? " active" : "";
+        item.id === AppState.conversations.selectedLine ? " active" : "";
       const statusBadge = item.success
         ? `<span class="badge badge-green">${t("common.success")}</span>`
         : `<span class="badge badge-red">${t("common.failed")}</span>`;
@@ -1108,7 +1108,7 @@ function renderConvList(data) {
         : "";
 
       return `
-        <div class="conv-item${active}" onclick="loadConvDetail(${item.line})">
+        <div class="conv-item${active}" onclick="loadConvDetail(${item.id})">
             <div class="conv-item-header">
                 <span class="badge badge-blue">${esc(item.model)}</span>
                 ${statusBadge}${toolBadge}
