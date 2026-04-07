@@ -5,289 +5,319 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ModelSwitch Gateway</title>
     <link rel="stylesheet" href="/web/css/style.css">
+    <meta name="description" content="ModelSwitch LLM Gateway Proxy Management Interface">
 </head>
 <body>
-    <div class="header">
+    <header class="header" role="banner">
         <h1>ModelSwitch Gateway</h1>
-        <div class="lang-switcher">
-            <button class="lang-btn active" data-lang="zh" onclick="setLocale('zh')">中文</button>
-            <button class="lang-btn" data-lang="en" onclick="setLocale('en')">EN</button>
-        </div>
-    </div>
-    <div class="tabs">
-        <button class="tab active" onclick="switchTab('providers')" data-i18n="tab.providers">供应商管理</button>
-        <button class="tab" onclick="switchTab('models')" data-i18n="tab.models">模型配置</button>
-        <button class="tab" onclick="switchTab('keys')" data-i18n="tab.keys">API Key</button>
-        <button class="tab" onclick="switchTab('queue')" data-i18n="tab.queue">队列监控</button>
-        <button class="tab" onclick="switchTab('usage')" data-i18n="tab.usage">用量统计</button>
-        <button class="tab" onclick="switchTab('logs')" data-i18n="tab.logs">调试日志</button>
-        <button class="tab" onclick="switchTab('conversations')" data-i18n="tab.conversations">对话记录</button>
-    </div>
+        <nav class="lang-switcher auth-switcher" aria-label="Language and auth">
+            <span id="auth-user" class="auth-indicator"></span>
+            <button id="auth-btn" class="lang-btn" onclick="showLoginModal()" data-i18n="auth.login">登录</button>
+            <button class="lang-btn active" data-lang="zh" onclick="setLocale('zh')" aria-label="Switch to Chinese" aria-pressed="true">中文</button>
+            <button class="lang-btn" data-lang="en" onclick="setLocale('en')" aria-label="Switch to English" aria-pressed="false">EN</button>
+        </nav>
+    </header>
 
-    <!-- Tab: Providers -->
-    <div id="tab-providers" class="tab-content active">
-        <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddProvider()" data-i18n="provider.add">+ 新建供应商</button>
-            <button class="btn" onclick="loadConfig()" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div id="providers-list"></div>
-        <template id="provider-card-template">
-            <div class="card">
-                <div class="card-header">
-                    <span class="card-title"></span>
-                    <span class="card-actions">
-                        <button class="btn btn-sm btn-edit" data-i18n="common.edit">编辑</button>
-                        <button class="btn btn-sm btn-danger" data-i18n="common.delete">删除</button>
-                    </span>
-                </div>
-                <div class="card-body">
-                    <table>
-                        <tr><td data-i18n="provider.td.protocol">协议</td><td><span class="badge badge-blue protocol-badge"></span></td></tr>
-                        <tr><td>Base URL</td><td class="base-url"></td></tr>
-                        <tr><td>API Key</td><td class="api-key-mask"></td></tr>
-                        <tr class="headers-row" style="display:none"><td>Headers</td><td class="headers-content"></td></tr>
-                        <tr class="queue-row" style="display:none"><td data-i18n="provider.td.queue">队列</td><td>
-                            <span class="badge badge-orange" data-i18n="provider.queue.enabled">已启用</span>
-                            <span class="queue-info"></span>
-                        </td></tr>
-                    </table>
+    <!-- Login Modal -->
+    <div id="login-modal" class="modal-overlay" style="display: none;">
+        <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+            <div class="modal-header">
+                <h3 id="login-title" data-i18n="auth.loginTitle">ModelSwitch 管理登录</h3>
+            </div>
+            <div class="modal-body">
+                <p data-i18n="auth.required">请先登录以访问管理功能</p>
+                <div class="form-group">
+                    <label for="login-api-key" data-i18n="auth.apiKey">管理员 API Key</label>
+                    <input type="password" id="login-api-key"
+                           placeholder="sk-..."
+                           data-i18n-placeholder="auth.ph.apiKey"
+                           autocomplete="off">
                 </div>
             </div>
-        </template>
-        <div id="provider-form" class="modal" style="display:none">
-            <div class="modal-content">
-                <h3 id="provider-form-title" data-i18n="provider.formTitle.add">新建供应商</h3>
-                <input type="hidden" id="pf-original-name">
-                <div class="form-group">
-                    <label data-i18n="provider.label.name">名称</label>
-                    <input id="pf-name" data-i18n-placeholder="provider.ph.name" placeholder="如 dashscope">
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="handleLogin()" data-i18n="auth.loginBtn">登录</button>
+            </div>
+        </div>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="Main navigation">
+        <button class="tab active" role="tab" aria-selected="true" aria-controls="tab-providers" id="tab-btn-providers" onclick="switchTab('providers')" data-i18n="tab.providers" tabindex="0">供应商管理</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-models" id="tab-btn-models" onclick="switchTab('models')" data-i18n="tab.models" tabindex="-1">模型配置</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-keys" id="tab-btn-keys" onclick="switchTab('keys')" data-i18n="tab.keys" tabindex="-1">API Key</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-queue" id="tab-btn-queue" onclick="switchTab('queue')" data-i18n="tab.queue" tabindex="-1">队列监控</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-usage" id="tab-btn-usage" onclick="switchTab('usage')" data-i18n="tab.usage" tabindex="-1">用量统计</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-logs" id="tab-btn-logs" onclick="switchTab('logs')" data-i18n="tab.logs" tabindex="-1">调试日志</button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="tab-conversations" id="tab-btn-conversations" onclick="switchTab('conversations')" data-i18n="tab.conversations" tabindex="-1">对话记录</button>
+    </nav>
+
+    <main role="main">
+        <!-- Tab: Providers -->
+        <section id="tab-providers" class="tab-content active" role="tabpanel" aria-labelledby="tab-btn-providers">
+            <div class="toolbar" role="toolbar" aria-label="Provider actions">
+                <button class="btn btn-primary" onclick="showAddProvider()" data-i18n="provider.add" aria-label="Add new provider">+ 新建供应商</button>
+                <button class="btn" onclick="loadConfig()" data-i18n="common.refresh" aria-label="Refresh provider list">刷新</button>
+            </div>
+            <div id="providers-list" role="list" aria-label="Provider list"></div>
+            <template id="provider-card-template">
+                <div class="card" role="listitem">
+                    <div class="card-header">
+                        <span class="card-title"></span>
+                        <span class="card-actions">
+                            <button class="btn btn-sm btn-edit" data-i18n="common.edit" aria-label="Edit provider">编辑</button>
+                            <button class="btn btn-sm btn-danger" data-i18n="common.delete" aria-label="Delete provider">删除</button>
+                        </span>
+                    </div>
+                    <div class="card-body">
+                        <table></table>
+                            <tr><td data-i18n="provider.td.protocol">协议</td><td><span class="badge badge-blue protocol-badge"></span></td></tr>
+                            <tr><td>Base URL</td><td class="base-url"></td></tr>
+                            <tr><td>API Key</td><td class="api-key-mask"></td></tr>
+                            <tr class="headers-row" style="display:none"><td>Headers</td><td class="headers-content"></td></tr>
+                            <tr class="queue-row" style="display:none"><td data-i18n="provider.td.queue">队列</td><td></td>
+                                <span class="badge badge-orange" data-i18n="provider.queue.enabled">已启用</span>
+                                <span class="queue-info"></span>
+                            </td></tr>
+                        </table>
+                    </div>
                 </div>
-                <div class="form-group">
-                    <label data-i18n="provider.label.protocol">协议类型</label>
-                    <select id="pf-provider">
-                        <option value="openai" data-i18n="provider.option.openai">OpenAI 兼容</option>
-                        <option value="anthropic" data-i18n="provider.option.anthropic">Anthropic</option>
+            </template>
+            <div id="provider-form" class="modal" style="display:none" role="dialog" aria-labelledby="provider-form-title" aria-modal="true">
+                <div class="modal-content">
+                    <h3 id="provider-form-title" data-i18n="provider.formTitle.add">新建供应商</h3>
+                    <input type="hidden" id="pf-original-name">
+                    <div class="form-group">
+                        <label for="pf-name" data-i18n="provider.label.name">名称</label>
+                        <input id="pf-name" data-i18n-placeholder="provider.ph.name" placeholder="如 dashscope" aria-required="true">
+                    </div>
+                    <div class="form-group">
+                        <label for="pf-provider" data-i18n="provider.label.protocol">协议类型</label>
+                        <select id="pf-provider" aria-required="true">
+                            <option value="openai" data-i18n="provider.option.openai">OpenAI 兼容</option>
+                            <option value="anthropic" data-i18n="provider.option.anthropic">Anthropic</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="pf-base-url" data-i18n="provider.label.baseUrl">Base URL</label>
+                        <input id="pf-base-url" placeholder="https://api.example.com/v1">
+                    </div>
+                    <div class="form-group">
+                        <label for="pf-api-key" data-i18n="provider.label.apiKey">API Key</label>
+                        <input id="pf-api-key" type="password" data-i18n-placeholder="provider.ph.apiKey" placeholder="${ENV_VAR} 或直接填入">
+                    </div>
+                    <div class="form-group">
+                        <label for="pf-headers" data-i18n="provider.label.headers">自定义 Headers (JSON)</label>
+                        <textarea id="pf-headers" rows="2" placeholder='{"X-Custom": "value"}'>{}</textarea>
+                    </div>
+                    <div class="form-section">
+                        <h4 data-i18n="provider.section.queue">请求队列配置</h4>
+                        <div class="form-group">
+                            <label for="pf-max-concurrent" data-i18n="provider.label.maxConcurrent">最大并发数 (0=不限制)</label>
+                            <input id="pf-max-concurrent" type="number" value="0" min="0" placeholder="0">
+                        </div>
+                        <div class="form-group">
+                            <label for="pf-max-queue-size" data-i18n="provider.label.maxQueueSize">最大队列长度</label>
+                            <input id="pf-max-queue-size" type="number" value="100" min="1" placeholder="100">
+                        </div>
+                        <div class="form-group">
+                            <label for="pf-queue-timeout" data-i18n="provider.label.queueTimeout">队列等待超时 (秒)</label>
+                            <input id="pf-queue-timeout" type="number" value="300" min="1" placeholder="300">
+                        </div>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="saveProvider()" data-i18n="common.save">保存</button>
+                        <button class="btn" onclick="hideProviderForm()" data-i18n="common.cancel">取消</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tab: Models -->
+        <section id="tab-models" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-models" hidden>
+            <div class="toolbar" role="toolbar" aria-label="Model actions">
+                <button class="btn btn-primary" onclick="showAddModel()" data-i18n="model.add" aria-label="Add new model">+ 新建模型</button>
+                <button class="btn" onclick="loadConfig()" data-i18n="common.refresh" aria-label="Refresh model list">刷新</button>
+            </div>
+            <div id="models-list" role="list" aria-label="Model list"></div>
+            <div id="model-form" class="modal" style="display:none" role="dialog" aria-labelledby="model-form-title" aria-modal="true">
+                <div class="modal-content">
+                    <h3 id="model-form-title" data-i18n="model.formTitle.add">新建模型</h3>
+                    <input type="hidden" id="mf-original-name">
+                    <div class="form-group">
+                        <label for="mf-name" data-i18n="model.label.name">模型名称</label>
+                        <input id="mf-name" data-i18n-placeholder="model.ph.name" placeholder="如 glm5" aria-required="true">
+                    </div>
+                    <div class="form-group">
+                        <label for="mf-mode" data-i18n="model.label.mode">调用模式</label>
+                        <select id="mf-mode" aria-required="true">
+                            <option value="chain" data-i18n="model.option.chain">Chain (fallback 链)</option>
+                            <option value="adapter" data-i18n="model.option.adapter">Adapter (直接调用)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="mf-description" data-i18n="model.label.description">描述</label>
+                        <input id="mf-description" data-i18n-placeholder="model.ph.description" placeholder="模型描述">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="model.label.adapters">适配器列表</label>
+                        <div id="mf-adapters-list" role="list" aria-label="Adapter list"></div>
+                        <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addAdapterRow()" data-i18n="adapter.add" aria-label="Add adapter">+ 添加适配器</button>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="saveModel()" data-i18n="common.save">保存</button>
+                        <button class="btn" onclick="hideModelForm()" data-i18n="common.cancel">取消</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tab: API Key -->
+        <!-- Tab: API Key -->
+        <section id="tab-keys" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-keys" hidden>
+            <div class="toolbar" role="toolbar" aria-label="API Key actions">
+                <button class="btn btn-primary" onclick="showAddKey()" data-i18n="key.add" aria-label="Add new API key">+ 新建 Key</button>
+                <button class="btn" onclick="loadKeys()" data-i18n="common.refresh" aria-label="Refresh API key list">刷新</button>
+            </div>
+            <div id="keys-list" role="list" aria-label="API Key list"></div>
+            <div id="key-form" class="modal" style="display:none" role="dialog" aria-labelledby="key-form-title" aria-modal="true">
+                <div class="modal-content">
+                    <h3 id="key-form-title" data-i18n="key.formTitle">新建 API Key</h3>
+                    <div class="form-group">
+                        <label for="kf-name" data-i18n="key.label.name">名称</label>
+                        <input id="kf-name" data-i18n-placeholder="key.ph.name" placeholder="如 张三">
+                    </div>
+                    <div class="form-group">
+                        <label for="kf-description" data-i18n="key.label.description">描述</label>
+                        <input id="kf-description" data-i18n-placeholder="key.ph.description" placeholder="用途说明">
+                    </div>
+                    <div class="form-group">
+                        <label for="kf-rate-limit" data-i18n="key.label.rateLimit">每分钟限流</label>
+                        <input id="kf-rate-limit" type="number" value="60" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="kf-daily-limit" data-i18n="key.label.dailyLimit">每日限流 (0=不限)</label>
+                        <input id="kf-daily-limit" type="number" value="0" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="kf-allowed-models" data-i18n="key.label.allowedModels">允许的模型 (逗号分隔，空=全部)</label>
+                        <input id="kf-allowed-models" placeholder="glm5, gpt4o">
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn btn-primary" onclick="createKey()" data-i18n="common.create">创建</button>
+                        <button class="btn" onclick="hideKeyForm()" data-i18n="common.cancel">取消</button>
+                    </div>
+                </div>
+            </div>
+            <div id="new-key-result" class="modal" style="display:none" role="dialog" aria-labelledby="new-key-title" aria-modal="true">
+                <div class="modal-content">
+                    <h3 id="new-key-title" data-i18n="key.created.title">API Key 创建成功</h3>
+                    <p class="warning" data-i18n="key.created.warning">请立即保存此 Key，关闭后无法再次查看</p>
+                    <div class="key-display">
+                        <input id="new-key-value" readonly aria-label="New API Key value">
+                        <button class="btn" onclick="copyKey()" data-i18n="common.copy" aria-label="Copy API Key to clipboard">复制</button>
+                    </div>
+                    <div class="form-actions">
+                        <button class="btn" onclick="document.getElementById('new-key-result').style.display='none'" data-i18n="common.close">关闭</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tab: Queue -->
+        <section id="tab-queue" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-queue" hidden>
+            <div class="toolbar" role="toolbar" aria-label="Queue monitor actions">
+                <button class="btn" onclick="loadQueueStats()" data-i18n="common.refresh" aria-label="Refresh queue stats">刷新</button>
+                <label>
+                    <input type="</label>checkbox" id="queue-auto-refresh" onchange="toggleQueueAutoRefresh()" aria-describedby="queue-auto-refresh-desc">
+                    <span id="queue-auto-refresh-desc" data-i18n="queue.label.autoRefresh">自动刷新 (5s)</span>
+                </label>
+            </div>
+            <div id="queue-summary" class="queue-summary" aria-label="Queue summary"></div>
+            <div id="queue-list" role="list" aria-label="Queue details"></div>
+        </section>
+
+        <!-- Tab: Usage -->
+        <section id="tab-usage" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-usage" hidden>
+            <div class="toolbar" role="toolbar" aria-label="Usage statistics filters">
+                <label><span data-i18n="usage.label.dimension">主维度：</span>
+                    <select id="usage-group-by" onchange="loadUsage()" aria-label="Group by dimension">
+                        <option value="provider" data-i18n="usage.dim.provider">模型服务商</option>
+                        <option value="model" data-i18n="usage.dim.model">模型</option>
+                        <option value="api_key" data-i18n="usage.dim.apiKey">API Key</option>
                     </select>
-                </div>
-                <div class="form-group">
-                    <label data-i18n="provider.label.baseUrl">Base URL</label>
-                    <input id="pf-base-url" placeholder="https://api.example.com/v1">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="provider.label.apiKey">API Key</label>
-                    <input id="pf-api-key" type="password" data-i18n-placeholder="provider.ph.apiKey" placeholder="${ENV_VAR} 或直接填入">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="provider.label.headers">自定义 Headers (JSON)</label>
-                    <textarea id="pf-headers" rows="2" placeholder='{"X-Custom": "value"}'>{}</textarea>
-                </div>
-                <div class="form-section">
-                    <h4 data-i18n="provider.section.queue">请求队列配置</h4>
-                    <div class="form-group">
-                        <label data-i18n="provider.label.maxConcurrent">最大并发数 (0=不限制)</label>
-                        <input id="pf-max-concurrent" type="number" value="0" min="0" placeholder="0">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="provider.label.maxQueueSize">最大队列长度</label>
-                        <input id="pf-max-queue-size" type="number" value="100" min="1" placeholder="100">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="provider.label.queueTimeout">队列等待超时 (秒)</label>
-                        <input id="pf-queue-timeout" type="number" value="300" min="1" placeholder="300">
-                    </div>
-                </div>
-                <div class="form-actions">
-                    <button class="btn btn-primary" onclick="saveProvider()" data-i18n="common.save">保存</button>
-                    <button class="btn" onclick="hideProviderForm()" data-i18n="common.cancel">取消</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Tab: Models -->
-    <div id="tab-models" class="tab-content">
-        <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddModel()" data-i18n="model.add">+ 新建模型</button>
-            <button class="btn" onclick="loadConfig()" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div id="models-list"></div>
-        <div id="model-form" class="modal" style="display:none">
-            <div class="modal-content">
-                <h3 id="model-form-title" data-i18n="model.formTitle.add">新建模型</h3>
-                <input type="hidden" id="mf-original-name">
-                <div class="form-group">
-                    <label data-i18n="model.label.name">模型名称</label>
-                    <input id="mf-name" data-i18n-placeholder="model.ph.name" placeholder="如 glm5">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="model.label.mode">调用模式</label>
-                    <select id="mf-mode">
-                        <option value="chain" data-i18n="model.option.chain">Chain (fallback 链)</option>
-                        <option value="adapter" data-i18n="model.option.adapter">Adapter (直接调用)</option>
+                </label>
+                <label><span data-i18n="usage.label.date">日期：</span>
+                    <select id="usage-date" onchange="loadUsage()" aria-label="Date range">
+                        <option value="today" data-i18n="usage.date.today">今日</option>
+                        <option value="week" data-i18n="usage.date.week">本周</option>
+                        <option value="month" data-i18n="usage.date.month">本月</option>
                     </select>
-                </div>
-                <div class="form-group">
-                    <label data-i18n="model.label.description">描述</label>
-                    <input id="mf-description" data-i18n-placeholder="model.ph.description" placeholder="模型描述">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="model.label.adapters">适配器列表</label>
-                    <div id="mf-adapters-list"></div>
-                    <button type="button" class="btn btn-sm" style="margin-top:8px" onclick="addAdapterRow()" data-i18n="adapter.add">+ 添加适配器</button>
-                </div>
-                <div class="form-actions">
-                    <button class="btn btn-primary" onclick="saveModel()" data-i18n="common.save">保存</button>
-                    <button class="btn" onclick="hideModelForm()" data-i18n="common.cancel">取消</button>
-                </div>
+                </label>
+                <button class="btn" onclick="loadUsage()" data-i18n="common.refresh" aria-label="Refresh usage statistics">刷新</button>
             </div>
-        </div>
-    </div>
+            <div id="usage-summary" aria-label="Usage summary" role="region"></div>
+            <div id="usage-detail" style="display:none" aria-label="Usage detail" role="region"></div>
+        </section>
 
-    <!-- Tab: API Key -->
-    <div id="tab-keys" class="tab-content">
-        <div class="toolbar">
-            <button class="btn btn-primary" onclick="showAddKey()" data-i18n="key.add">+ 新建 Key</button>
-            <button class="btn" onclick="loadKeys()" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div id="keys-list"></div>
-        <div id="key-form" class="modal" style="display:none">
-            <div class="modal-content">
-                <h3 data-i18n="key.formTitle">新建 API Key</h3>
-                <div class="form-group">
-                    <label data-i18n="key.label.name">名称</label>
-                    <input id="kf-name" data-i18n-placeholder="key.ph.name" placeholder="如 张三">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="key.label.description">描述</label>
-                    <input id="kf-description" data-i18n-placeholder="key.ph.description" placeholder="用途说明">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="key.label.rateLimit">每分钟限流</label>
-                    <input id="kf-rate-limit" type="number" value="60" min="0">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="key.label.dailyLimit">每日限流 (0=不限)</label>
-                    <input id="kf-daily-limit" type="number" value="0" min="0">
-                </div>
-                <div class="form-group">
-                    <label data-i18n="key.label.allowedModels">允许的模型 (逗号分隔，空=全部)</label>
-                    <input id="kf-allowed-models" placeholder="glm5, gpt4o">
-                </div>
-                <div class="form-actions">
-                    <button class="btn btn-primary" onclick="createKey()" data-i18n="common.create">创建</button>
-                    <button class="btn" onclick="hideKeyForm()" data-i18n="common.cancel">取消</button>
-                </div>
+        <!-- Tab: Logs -->
+        <section id="tab-logs" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-logs" hidden>
+            <div class="toolbar" role="toolbar" aria-label="Log filters">
+                <label><span data-i18n="log.label.level">级别：</span>
+                    <select id="log-level" onchange="loadLogs()" aria-label="Filter by log level">
+                        <option value="" data-i18n="common.all">全部</option>
+                        <option value="DEBUG">DEBUG</option>
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR">ERROR</option>
+                    </select>
+                </label>
+                <label><span data-i18n="log.label.requestId">Request ID：</span>
+                    <input id="log-request-id" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px" aria-label="Filter by Request ID">
+                </label>
+                <label><span data-i18n="log.label.apiKey">API Key：</span>
+                    <input id="log-api-key" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px" aria-label="Filter by API Key">
+                </label>
+                <button class="btn" onclick="loadLogs()" data-i18n="common.refresh" aria-label="Refresh logs">刷新</button>
+                <label>
+                    <input type="checkbox" id="log-auto-refresh" aria-describedby="log-auto-refresh-desc">
+                    <span id="log-auto-refresh-desc" data-i18n="log.label.autoRefresh">自动刷新</span>
+                </label>
             </div>
-        </div>
-        <div id="new-key-result" class="modal" style="display:none">
-            <div class="modal-content">
-                <h3 data-i18n="key.created.title">API Key 创建成功</h3>
-                <p class="warning" data-i18n="key.created.warning">请立即保存此 Key，关闭后无法再次查看</p>
-                <div class="key-display">
-                    <input id="new-key-value" readonly>
-                    <button class="btn" onclick="copyKey()" data-i18n="common.copy">复制</button>
+            <div id="log-container" class="log-viewer" role="log" aria-label="Log entries" aria-live="polite"></div>
+        </section>
+
+        <!-- Tab: Conversations -->
+        <section id="tab-conversations" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-conversations" hidden style="max-width: 100%;">
+            <div class="toolbar" role="toolbar" aria-label="Conversation filters">
+                <label><span data-i18n="conv.label.apiKey">API Key：</span>
+                    <select id="conv-api-key" onchange="loadConversations()" aria-label="Filter by API Key">
+                        <option value="" data-i18n="common.all">全部</option>
+                    </select>
+                </label>
+                <label><span data-i18n="conv.label.model">模型：</span>
+                    <select id="conv-model" onchange="loadConversations()" aria-label="Filter by model">
+                        <option value="" data-i18n="common.all">全部</option>
+                    </select>
+                </label>
+                <label><span data-i18n="conv.label.status">状态：</span>
+                    <select id="conv-success" onchange="loadConversations()" aria-label="Filter by status">
+                        <option value="" data-i18n="common.all">全部</option>
+                        <option value="true" data-i18n="common.success">成功</option>
+                        <option value="false" data-i18n="common.failed">失败</option>
+                    </select>
+                </label>
+                <button class="btn" onclick="loadConversations()" data-i18n="common.refresh" aria-label="Refresh conversations">刷新</button>
+            </div>
+            <div class="conv-layout">
+                <div class="conv-list-panel">
+                    <div id="conv-list" role="list" aria-label="Conversation list"></div>
+                    <nav id="conv-pagination" class="conv-pagination" role="navigation" aria-label="Conversation pagination"></nav>
                 </div>
-                <div class="form-actions">
-                    <button class="btn" onclick="document.getElementById('new-key-result').style.display='none'" data-i18n="common.close">关闭</button>
-                </div>
+                <article class="conv-detail-panel" id="conv-detail" role="article" aria-label="Conversation detail">
+                    <div class="conv-detail-empty" data-i18n="conv.detail.empty">点击左侧对话记录查看详情</div>
+                </article>
             </div>
-        </div>
-    </div>
-
-    <!-- Tab: Queue -->
-    <div id="tab-queue" class="tab-content">
-        <div class="toolbar">
-            <button class="btn" onclick="loadQueueStats()" data-i18n="common.refresh">刷新</button>
-            <label>
-                <input type="checkbox" id="queue-auto-refresh" onchange="toggleQueueAutoRefresh()"> 
-                <span data-i18n="queue.label.autoRefresh">自动刷新 (5s)</span>
-            </label>
-        </div>
-        <div id="queue-summary" class="queue-summary"></div>
-        <div id="queue-list"></div>
-    </div>
-
-    <!-- Tab: Usage -->
-    <div id="tab-usage" class="tab-content">
-        <div class="toolbar">
-            <label><span data-i18n="usage.label.dimension">主维度：</span>
-                <select id="usage-group-by" onchange="loadUsage()">
-                    <option value="provider" data-i18n="usage.dim.provider">模型服务商</option>
-                    <option value="model" data-i18n="usage.dim.model">模型</option>
-                    <option value="api_key" data-i18n="usage.dim.apiKey">API Key</option>
-                </select>
-            </label>
-            <label><span data-i18n="usage.label.date">日期：</span>
-                <select id="usage-date" onchange="loadUsage()">
-                    <option value="today" data-i18n="usage.date.today">今日</option>
-                    <option value="week" data-i18n="usage.date.week">本周</option>
-                    <option value="month" data-i18n="usage.date.month">本月</option>
-                </select>
-            </label>
-            <button class="btn" onclick="loadUsage()" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div id="usage-summary"></div>
-        <div id="usage-detail" style="display:none"></div>
-    </div>
-
-    <!-- Tab: Logs -->
-    <div id="tab-logs" class="tab-content">
-        <div class="toolbar">
-            <label><span data-i18n="log.label.level">级别：</span>
-                <select id="log-level" onchange="loadLogs()">
-                    <option value="" data-i18n="common.all">全部</option>
-                    <option value="DEBUG">DEBUG</option>
-                    <option value="INFO">INFO</option>
-                    <option value="WARNING">WARNING</option>
-                    <option value="ERROR">ERROR</option>
-                </select>
-            </label>
-            <label><span data-i18n="log.label.requestId">Request ID：</span>
-                <input id="log-request-id" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px">
-            </label>
-            <label><span data-i18n="log.label.apiKey">API Key：</span>
-                <input id="log-api-key" data-i18n-placeholder="common.filter" placeholder="过滤" style="width:120px">
-            </label>
-            <button class="btn" onclick="loadLogs()" data-i18n="common.refresh">刷新</button>
-            <label>
-                <input type="checkbox" id="log-auto-refresh"> <span data-i18n="log.label.autoRefresh">自动刷新</span>
-            </label>
-        </div>
-        <div id="log-container" class="log-viewer"></div>
-    </div>
-
-    <!-- Tab: Conversations -->
-    <div id="tab-conversations" class="tab-content" style="max-width: 100%;">
-        <div class="toolbar">
-            <label><span data-i18n="conv.label.apiKey">API Key：</span>
-                <select id="conv-api-key" onchange="loadConversations()">
-                    <option value="" data-i18n="common.all">全部</option>
-                </select>
-            </label>
-            <label><span data-i18n="conv.label.model">模型：</span>
-                <select id="conv-model" onchange="loadConversations()">
-                    <option value="" data-i18n="common.all">全部</option>
-                </select>
-            </label>
-            <label><span data-i18n="conv.label.status">状态：</span>
-                <select id="conv-success" onchange="loadConversations()">
-                    <option value="" data-i18n="common.all">全部</option>
-                    <option value="true" data-i18n="common.success">成功</option>
-                    <option value="false" data-i18n="common.failed">失败</option>
-                </select>
-            </label>
-            <button class="btn" onclick="loadConversations()" data-i18n="common.refresh">刷新</button>
-        </div>
-        <div class="conv-layout">
-            <div class="conv-list-panel">
-                <div id="conv-list"></div>
-                <div id="conv-pagination" class="conv-pagination"></div>
-            </div>
-            <div class="conv-detail-panel" id="conv-detail">
-                <div class="conv-detail-empty" data-i18n="conv.detail.empty">点击左侧对话记录查看详情</div>
-            </div>
-        </div>
-    </div>
+        </section>
+    </main>
 
     <script src="/web/js/i18n.js"></script>
     <script src="/web/js/app.js"></script>
