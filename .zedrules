@@ -1,0 +1,77 @@
+# ModelSwitch Development Rules
+
+## Project Overview
+
+ModelSwitch is an LLM gateway proxy exposing OpenAI-compatible and Anthropic-compatible APIs with automatic fallback chains, rate limiting, and usage tracking.
+
+## Key Constraints
+
+### Dependencies
+- `litellm` is pinned to `1.82.6` — **NEVER upgrade** (supply chain attack on 1.82.7/1.82.8)
+
+### Middleware
+- `GatewayMiddleware` is pure ASGI (`__call__(scope, receive, send)`)
+- **NEVER** use `BaseHTTPMiddleware` or `@app.middleware("http")` — causes infinite recursion
+
+### Streaming
+- Use `resp_ref` closure pattern to capture usage from async stream generators
+- Adapters return `AdapterResponse` with `body` (non-stream) or `stream` (async generator)
+- Route handlers read `_stream_adapter_info` dict after stream completes
+
+## Development Workflow
+
+### Before Starting
+1. Run `git status` — commit any uncommitted changes first
+2. Create feature branch: `git checkout -b feature/[name]`
+
+### During Development
+1. Follow existing code patterns
+2. Check `CLAUDE.md` for architecture details
+3. Make small, focused commits
+
+### Before Committing
+1. Run tests: `python -m pytest tests/ -v --timeout=60`
+2. Update documentation if architecture changed
+3. Add test cases for new functionality
+
+### Commit Format
+```
+<type>: <description>
+
+- Change 1
+- Change 2
+
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
+```
+
+Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `ci`
+
+### After Pushing
+- CI runs automatically on Python 3.10–3.13
+- Check: https://github.com/ddmonster/modelswitch/actions
+
+## Quick Commands
+
+```bash
+# Start server
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Run tests
+python -m pytest tests/ -v --timeout=60
+
+# Run specific test file
+python -m pytest tests/test_message_converter.py -v
+
+# Health check
+curl -s http://localhost:8000/api/config/health
+```
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `config.yaml` | Providers, models, API keys (hot-reloaded) |
+| `app/core/chain_router.py` | Routes requests with fallback |
+| `app/adapters/*.py` | Provider-specific adapters |
+| `app/utils/message_converter.py` | OpenAI ↔ Anthropic conversion |
+| `CLAUDE.md` | Full architecture documentation |
