@@ -1,9 +1,11 @@
 """Usage tracking and logging helpers for route handlers."""
+
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 _conv_logger = logging.getLogger("modelswitch.conversations")
 
@@ -47,13 +49,24 @@ def _extract_output(result):
         parts.append({"type": "text", "text": msg["content"]})
     for tc in msg.get("tool_calls", []):
         func = tc.get("function", {})
-        parts.append({"type": "tool_use", "name": func.get("name", ""), "arguments": func.get("arguments", "")})
+        parts.append(
+            {
+                "type": "tool_use",
+                "name": func.get("name", ""),
+                "arguments": func.get("arguments", ""),
+            }
+        )
     return parts or None
 
 
 async def track_request(
-    app_state, request_id, model, result, api_key_alias="",
-    messages=None, stream_output=None,
+    app_state,
+    request_id,
+    model,
+    result,
+    api_key_alias="",
+    messages=None,
+    stream_output=None,
 ):
     """记录请求的用量统计和日志。在路由处理完成后调用。"""
     from app.utils.logging import add_log_to_buffer
@@ -105,5 +118,24 @@ async def track_request(
             record["error"] = result.error
         try:
             _conv_logger.info(json.dumps(record, ensure_ascii=False))
+            # Also index the record for fast queries
+            try:
+                from app.utils.logging import get_conv_handler
+
+                handler = get_conv_handler()
+                if handler:
+                    from app.services.conv_indexer import get_conv_indexer
+
+                    indexer = get_conv_indexer()
+                    if indexer:
+                        raw_line = json.dumps(record, ensure_ascii=False)
+                        indexer.index(
+                            record=record,
+                            file_path=Path(handler.current_base_filename).name,
+                            byte_offset=handler.last_byte_offset,
+                            line_length=len(raw_line.encode("utf-8")),
+                        )
+            except Exception:
+                pass  # Indexing failure should not break request logging
         except Exception:
             pass

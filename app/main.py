@@ -13,14 +13,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.core.chain_router import ChainRouter
 from app.core.config import load_config, save_config
 from app.core.middleware import GatewayMiddleware
-from app.utils.logging import setup_logging
-from app.core.chain_router import ChainRouter
 from app.core.request_queue import get_queue_manager
-from app.services.api_key_service import ApiKeyService
-from app.services.usage_tracker import UsageTracker
 from app.models.config_models import resolve_config_env
+from app.services.api_key_service import ApiKeyService
+from app.services.conv_indexer import ConvIndexer, set_conv_indexer
+from app.services.usage_tracker import UsageTracker
+from app.utils.logging import setup_logging
 
 CONFIG_PATH = "config.yaml"
 
@@ -33,6 +34,7 @@ _active_requests = {"count": 0}
 
 
 # ========== lifespan（必须在 app 创建之前定义）==========
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,7 +58,9 @@ async def lifespan(app: FastAPI):
         backup_count=config.gateway.log_backup_count,
     )
     logger = logging.getLogger("modelswitch")
-    logger.info(f"Gateway 配置加载完成：{len(config.providers)} providers, {len(config.models)} models, {len(config.api_keys)} keys")
+    logger.info(
+        f"Gateway 配置加载完成：{len(config.providers)} providers, {len(config.models)} models, {len(config.api_keys)} keys"
+    )
 
     # 3. 初始化核心组件
     app.state.chain_router = ChainRouter(config)
@@ -83,11 +87,24 @@ async def lifespan(app: FastAPI):
     await usage_tracker.init()
     app.state.usage_tracker = usage_tracker
 
+    # 4.5 初始化会话日志索引
+    conv_indexer = ConvIndexer(db_path=str(Path("data") / "conv_index.db"))
+    # Auto-rebuild if index is empty
+    if conv_indexer.record_count() == 0:
+        logger.info("会话索引为空，正在重建...")
+        count = conv_indexer.rebuild_from_logs(config.gateway.log_dir)
+        logger.info(f"会话索引重建完成：{count} 条记录")
+    else:
+        logger.info(f"会话索引已加载：{conv_indexer.record_count()} 条记录")
+    app.state.conv_indexer = conv_indexer
+    set_conv_indexer(conv_indexer)
+
     # 定时 flush 用量数据
     async def flush_loop():
         while True:
             await asyncio.sleep(config.gateway.usage_flush_interval)
             await usage_tracker.flush()
+
     flush_task = asyncio.create_task(flush_loop())
 
     # 5. 预热 httpx 连接池
@@ -123,6 +140,7 @@ async def lifespan(app: FastAPI):
     config_watcher = None
     try:
         from app.core.config_watcher import ConfigWatcher
+
         config_watcher = ConfigWatcher(CONFIG_PATH, reload_config)
         config_watcher.start()
     except ImportError:
@@ -132,10 +150,12 @@ async def lifespan(app: FastAPI):
 
     # 7. 更新 Prometheus 指标
     from app.utils.metrics import ACTIVE_REQUESTS as ACTIVE_GAUGE
+
     async def update_active_gauge():
         while True:
             ACTIVE_GAUGE.set(_active_requests["count"])
             await asyncio.sleep(1)
+
     gauge_task = asyncio.create_task(update_active_gauge())
 
     logger.info(f"Gateway 启动完成，监听 {config.gateway.host}:{config.gateway.port}")
@@ -156,6 +176,7 @@ async def lifespan(app: FastAPI):
 
     await usage_tracker.flush()
     await usage_tracker.close()
+    conv_indexer.close()
 
     timeout = 30
     while _active_requests["count"] > 0 and timeout > 0:
@@ -175,7 +196,7 @@ def _update_middleware_config(app: FastAPI, config):
         if isinstance(mw, GatewayMiddleware):
             mw.reload_config(config)
             return
-        mw = getattr(mw, 'app', None)
+        mw = getattr(mw, "app", None)
 
 
 # ========== 创建 FastAPI 应用 ==========
@@ -188,18 +209,20 @@ app = FastAPI(
 )
 
 # 添加网关中间件（纯 ASGI，无 BaseHTTPMiddleware）
-app.add_middleware(GatewayMiddleware, config=_initial_config, active_requests_counter=_active_requests)
+app.add_middleware(
+    GatewayMiddleware, config=_initial_config, active_requests_counter=_active_requests
+)
 
 
 # ========== 路由 ==========
 
-from app.api.openai_routes import router as openai_router
 from app.api.anthropic_routes import router as anthropic_router
-from app.api.config_routes import router as config_router
 from app.api.api_key_routes import router as api_key_router
-from app.api.usage_routes import router as usage_router
-from app.api.log_routes import router as log_router
+from app.api.config_routes import router as config_router
 from app.api.conversation_routes import router as conversation_router
+from app.api.log_routes import router as log_router
+from app.api.openai_routes import router as openai_router
+from app.api.usage_routes import router as usage_router
 
 app.include_router(openai_router)
 app.include_router(anthropic_router)
@@ -225,6 +248,7 @@ if web_dir.exists():
 
 try:
     from prometheus_client import make_asgi_app
+
     metrics_app = make_asgi_app()
     app.mount("/metrics", metrics_app)
 except ImportError:
@@ -233,8 +257,9 @@ except ImportError:
 
 # ========== 全局异常处理 ==========
 
-from app.core.exceptions import GatewayError
 from fastapi.responses import JSONResponse
+
+from app.core.exceptions import GatewayError
 
 
 @app.exception_handler(GatewayError)
@@ -243,12 +268,21 @@ async def gateway_error_handler(request: Request, exc: GatewayError):
     if "/v1/messages" in path or "/anthropic/" in path:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"type": "error", "error": {"type": "api_error", "message": exc.message}},
+            content={
+                "type": "error",
+                "error": {"type": "api_error", "message": exc.message},
+            },
         )
     else:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"message": exc.message, "type": "upstream_error", "code": exc.detail.get("type", "")}},
+            content={
+                "error": {
+                    "message": exc.message,
+                    "type": "upstream_error",
+                    "code": exc.detail.get("type", ""),
+                }
+            },
         )
 
 

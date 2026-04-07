@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from collections import deque
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -33,6 +35,38 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_entry, ensure_ascii=False)
 
 
+class TrackingRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that tracks byte offsets of written records.
+
+    After emit(), self.last_byte_offset contains the file position
+    where the last record started, and self.current_baseFilename
+    contains the current log file path.
+    """
+
+    def __init__(self, filename, *args, **kwargs):
+        super().__init__(filename, *args, **kwargs)
+        self.last_byte_offset = 0
+        self._offset_lock = threading.Lock()
+
+    def emit(self, record):
+        with self._offset_lock:
+            if self.stream and not self.stream.closed:
+                try:
+                    self.last_byte_offset = self.stream.tell()
+                except (OSError, ValueError):
+                    self.last_byte_offset = 0
+        super().emit(record)
+
+    @property
+    def current_base_filename(self) -> str:
+        """Return the current log file path."""
+        return self.baseFilename
+
+
+# Module-level reference to the conversation log handler for byte offset tracking
+_conv_handler: Optional[TrackingRotatingFileHandler] = None
+
+
 def setup_logging(
     log_level: str = "INFO",
     log_dir: str = "logs",
@@ -55,8 +89,6 @@ def setup_logging(
     root_logger.addHandler(stdout_handler)
 
     # 文件 handler（按天轮转）
-    from logging.handlers import RotatingFileHandler
-
     file_handler = RotatingFileHandler(
         f"{log_dir}/gateway.log",
         maxBytes=max_bytes,
@@ -71,7 +103,7 @@ def setup_logging(
     conv_logger.setLevel(logging.INFO)
     conv_logger.propagate = False
     conv_logger.handlers.clear()
-    conv_handler = RotatingFileHandler(
+    conv_handler = TrackingRotatingFileHandler(
         f"{log_dir}/conversations.jsonl",
         maxBytes=max_bytes,
         backupCount=backup_count,
@@ -79,6 +111,15 @@ def setup_logging(
     )
     conv_handler.setFormatter(logging.Formatter("%(message)s"))
     conv_logger.addHandler(conv_handler)
+
+    # Export for other modules to access tracking info
+    global _conv_handler
+    _conv_handler = conv_handler
+
+
+def get_conv_handler() -> Optional[TrackingRotatingFileHandler]:
+    """Get the conversation log file handler for byte offset tracking."""
+    return _conv_handler
 
 
 def add_log_to_buffer(request_id: str, level: str, message: str, **extra) -> None:
