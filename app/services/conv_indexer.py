@@ -230,10 +230,10 @@ class ConvIndexer:
             return None
 
         try:
-            with open(full_path, "r", encoding="utf-8") as f:
+            with open(full_path, "rb") as f:
                 f.seek(loc["byte_offset"])
                 raw = f.read(loc["line_length"])
-                record = json.loads(raw)
+                record = json.loads(raw.decode("utf-8"))
             record["id"] = record_id
             return record
         except (json.JSONDecodeError, OSError, KeyError):
@@ -318,11 +318,11 @@ class ConvIndexer:
                 continue
             offset = 0
             try:
-                with open(file_path, "r", encoding="utf-8") as f:
+                with open(file_path, "rb") as f:
                     for line in f:
-                        stripped = line.rstrip("\n")
-                        if not stripped.strip():
-                            offset += len(line.encode("utf-8"))
+                        stripped = line.strip(b"\n\r")
+                        if not stripped:
+                            offset += len(line)
                             continue
                         try:
                             rec = json.loads(stripped)
@@ -331,13 +331,13 @@ class ConvIndexer:
                                     "record": rec,
                                     "file_path": file_path.name,
                                     "byte_offset": offset,
-                                    "line_length": len(stripped.encode("utf-8")),
+                                    "line_length": len(stripped),
                                 }
                             )
                             total_indexed += 1
                         except (json.JSONDecodeError, Exception):
                             pass
-                        offset += len(line.encode("utf-8"))
+                        offset += len(line)
 
                         if len(batch) >= batch_size:
                             self.batch_index(batch)
