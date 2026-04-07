@@ -4,6 +4,15 @@ This document tracks test coverage improvements for ModelSwitch.
 
 ## Current Status (82%)
 
+### Auth & Access Control (New)
+
+| Component | Coverage | Status |
+|-----------|----------|--------|
+| Middleware admin auth paths | Covered via api_routes | Done |
+| Middleware role-based access | Covered via api_routes | Done |
+| Frontend login modal | Manual testing | Done |
+| API key roles field | Covered via config_models | Done |
+
 ### Done (100% Coverage)
 
 | Component | Coverage | Status |
@@ -320,6 +329,7 @@ python -m pytest tests/ --cov=app --cov-report=html
 
 ## Last Updated
 
-Date: 2025-01-09
+Date: 2026-04-07
 Overall Coverage: 82%
 Tests: 400+ passing
+Auth: Role-based access control added for management API and frontend login UI

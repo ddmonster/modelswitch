@@ -181,6 +181,7 @@ print(response.content[0].text)
 - **Debug Logs**: 实时请求日志，支持按级别/Request ID/API Key 过滤
 - **Conversations**: 对话记录查看器，完整输入/输出/Tool Call 回放，消息折叠展开
 - **i18n**: 支持中文/英文界面切换（右上角语言按钮）
+- **登录鉴权**: 管理界面需要使用 admin 角色 API Key 登录后才能操作
 
 ## API Key 管理
 
@@ -195,10 +196,12 @@ print(response.content[0].text)
 
 ```bash
 # 列出所有 API Key
+# 需要 admin 角色
 curl -s http://localhost:8000/api/keys \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 
 # 创建新 Key
+# 需要 admin 角色
 curl -s -X POST http://localhost:8000/api/keys \
   -H "Authorization: Bearer YOUR_ADMIN_KEY" \
   -H "Content-Type: application/json" \
@@ -211,9 +214,33 @@ curl -s -X POST http://localhost:8000/api/keys \
   }'
 
 # 删除 Key
+# 需要 admin 角色
 curl -s -X DELETE http://localhost:8000/api/keys/my-app \
   -H "Authorization: Bearer YOUR_ADMIN_KEY"
 ```
+
+## 管理 API 鉴权
+
+管理界面和 API 采用基于角色的访问控制：
+
+| 路径 | 需要认证 | 需要角色 |
+|------|----------|----------|
+| `/`, `/health`, `/docs`, `/web/*` | ❌ | — |
+| `/v1/*`, `/openai/*`, `/anthropic/*` | ✅ | 任意有效 Key |
+| `/api/usage`, `/api/logs`, `/api/conversations` | ✅ | 任意有效 Key |
+| `/api/config/*`, `/api/keys/*` | ✅ | admin |
+
+在 `config.yaml` 中给 API Key 添加 `roles` 字段来授予管理员权限：
+
+```yaml
+api_keys:
+  - key: sk-gateway-admin
+    name: admin
+    roles:
+      - admin
+```
+
+**前端登录**：访问 Web 管理界面时会弹出登录框，输入 admin 角色的 API Key 即可。登录状态通过浏览器 localStorage 持久化。
 
 ## 可用模型
 
@@ -234,7 +261,7 @@ tail -f logs/conversations.jsonl
 ### 常见问题
 
 1. **401 Unauthorized**: 检查 API Key 是否正确
-2. **403 Forbidden**: 检查 API Key 是否启用的，或模型是否在 allowed_models 列表中
+2. **403 Forbidden**: 检查 API Key 是否启用的，或模型是否在 allowed_models 列表中，或访问管理 API 时缺少 admin 角色
 3. **404 Model not found**: 检查模型名称是否正确（区分大小写，建议用小写）
 4. **502/503 Upstream error**: 上游提供商不可用，检查 provider 配置
 

@@ -54,7 +54,7 @@ Client → GatewayMiddleware (auth/rate-limit) → Route Handler → ChainRouter
 - **Models** reference providers by name with priority/timeout. Two modes:
   - `chain`: tries adapters by priority, falls back on failure (with circuit breaker + 1 retry per adapter)
   - `adapter`: direct call to a single provider, no fallback
-- **API Keys** are configured in the YAML, not a database. They gate access to `/v1/*` endpoints.
+- **API Keys** are configured in the YAML, not a database. They have a `roles` field (`admin` | `user`, default `["user"]`). Admin keys can manage providers/models/keys via management API.
 
 ### Core Layer (`app/core/`)
 
@@ -62,7 +62,7 @@ Client → GatewayMiddleware (auth/rate-limit) → Route Handler → ChainRouter
 |---|---|
 | `chain_router.py` | Routes requests to adapters. Chain mode does first-chunk probe for streaming fallback. Uses `_adapter_info` dict to pass adapter name/latency/usage from stream generator to caller. |
 | `circuit_breaker.py` | Per-provider circuit breaker: 5 failures → 30s open → half-open probe |
-| `middleware.py` | Pure ASGI middleware (NOT BaseHTTPMiddleware — that causes infinite recursion). Auth, rate limiting, CORS. |
+| `middleware.py` | Pure ASGI middleware (NOT BaseHTTPMiddleware — that causes infinite recursion). Three-tier auth: public paths (no auth), API key auth (any valid key), admin auth (role check). Plus rate limiting and CORS. |
 | `config_watcher.py` | watchdog-based hot reload with 2s debounce |
 
 ### Middleware Constraint
@@ -88,6 +88,7 @@ Bidirectional conversion between Anthropic and OpenAI formats:
 - `config_routes.py`, `api_key_routes.py`: CRUD for providers/models/keys, writes back to `config.yaml`
 - `usage_routes.py`: Aggregated stats with `group_by` (provider/model/api_key) and drill-down
 - `log_routes.py`: Queries in-memory ring buffer (max 1000 entries)
+- `conversation_routes.py`: Queries conversation log files (multi-file discovery with metadata streaming, on-demand full record fetch)
 
 ### Protocol Conversion — Full details in `app/utils/message_converter.py`
 
@@ -109,13 +110,14 @@ For streaming: `chain_router._execute_chat_stream` populates `_adapter_info` dic
 
 ### Frontend
 
-Single-page app in `web/` (HTML/CSS/JS, no build step). 5 tabs: Providers, Models, API Keys, Usage Stats, Debug Logs. Served at `/` and `/web/`.
+Single-page app in `web/` (HTML/CSS/JS, no build step). 7 tabs: Providers, Models, API Keys, Queue Monitor, Usage Stats, Debug Logs, Conversations. Login modal requires admin API key. Token persisted in localStorage. Served at `/` and `/web/`.
 
 ## Key Patterns
 
 - Route handlers access shared state via `request.app.state` (chain_router, usage_tracker, api_key_service, config)
-- The middleware injects auth info into `scope["state"]` (api_key, api_key_name, api_key_config), which maps to `request.state` in route handlers
-- Public paths (no auth required): `/`, `/health`, `/metrics`, `/docs`, `/web/*`, `/api/*`
-- Auth-required paths: `/v1/*`, `/openai/*`, `/anthropic/*` — accepts `Authorization: Bearer <key>`, `x-api-key: <key>`, or bare `sk-*` header
+- The middleware injects auth info into `scope["state"]` (api_key, api_key_name, api_key_config, api_key_roles), which maps to `request.state` in route handlers
+- Public paths (no auth required): `/`, `/health`, `/metrics`, `/docs`, `/web/*`, `/static/*`
+- Auth-required paths (any valid key): `/v1/*`, `/openai/*`, `/anthropic/*`, `/api/usage`, `/api/logs`, `/api/conversations` — accepts `Authorization: Bearer <key>`, `x-api-key: <key>`, or bare `sk-*` header
+- Admin-required paths (`roles: ["admin"]`): `/api/config/*`, `/api/keys/*`
 - Error format adapts to route: OpenAI-style `{"error": {...}}` for `/openai/*` and `/v1/chat/completions`, Anthropic-style `{"type": "error", "error": {...}}` for `/anthropic/*` and `/v1/messages`
 - Anthropic routes skip conversion when the first adapter is an Anthropic provider (passthrough mode)

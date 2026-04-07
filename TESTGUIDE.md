@@ -344,6 +344,16 @@ MODEL_NAME=your-model-name pytest tests/test_e2e.py -v
 MODELSWITCH_ADMIN_KEY=your-api-key pytest tests/test_e2e.py -v
 ```
 
+### Tests Fail with "403 Forbidden"
+
+**Cause:** Request requires admin role but key doesn't have it.
+
+**Solution:**
+```bash
+# Ensure test client has admin role (check tests/conftest.py)
+# Or add roles: ["admin"] to the API key in test config
+```
+
 ### Rate Limited During Tests
 
 **Cause:** Too many requests in short time.
@@ -453,6 +463,8 @@ class TestOpenAIChatCompletions:
 # - client_expired_key: Client with expired API key
 # - sample_config: Sample configuration
 # - usage_db: In-memory usage tracker
+# NOTE: Test client includes admin role by default (sk-gateway-admin with roles: ["admin"]).
+# Management API endpoints (/api/config/*, /api/keys/*) require admin role authentication.
 ```
 
 ### Mocking Adapters

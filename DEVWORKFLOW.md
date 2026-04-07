@@ -100,6 +100,7 @@ git checkout -b feature/o1-reasoning-tokens
 - [ ] Logging added for debugging
 - [ ] No security vulnerabilities
 - [ ] Type hints where applicable
+- [ ] Auth consideration: Does this change affect API auth requirements?
 
 #### 3.3 Commit During Development
 
@@ -283,6 +284,7 @@ python -m pytest tests/ --cov=app --cov-report=term-missing
 - [ ] Code follows style guide
 - [ ] No security issues
 - [ ] Coverage maintained or improved
+- [ ] Auth implications documented (if changed API routes)
 
 #### 6.2 Final Commit
 
