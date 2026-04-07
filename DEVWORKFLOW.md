@@ -5,8 +5,24 @@ This document defines the standard workflow for developing new features in Model
 ## Quick Reference
 
 ```
-Feature Request → Analysis → Git Commit → Development → Update Docs → Run Tests → Review
+Feature Request → Analysis → Git Commit → Development → Update Docs → Run Tests → CI Passes → Review
 ```
+
+---
+
+## CI/CD
+
+GitHub Actions CI runs automatically on push/PR to `main` with Python 3.10–3.13 matrix.
+
+**Workflow file:** `.github/workflows/ci.yml`
+
+```bash
+# Local test before push (same as CI)
+pip install pytest pytest-asyncio pytest-timeout litellm==1.82.6
+python -m pytest tests/ -v --timeout=60
+```
+
+**Note:** `litellm` is pinned to 1.82.6 — do not upgrade (supply chain attack on 1.82.7/1.82.8).
 
 ---
 
@@ -309,11 +325,15 @@ Closes #[issue-number]"
 # Push to remote
 git push origin feature/[feature-name]
 
+# CI will automatically run on Python 3.10–3.13
+# Check status at: https://github.com/ddmonster/modelswitch/actions
+
 # Create pull request with:
 # - Description of changes
 # - Test results
 # - Documentation updates
 # - Breaking changes (if any)
+# - CI must pass before merge
 ```
 
 ---
@@ -437,6 +457,7 @@ MODELSWITCH_E2E=1 pytest tests/test_e2e.py -v
 │  - Check pre-commit checklist                                   │
 │  - Final commit                                                  │
 │  - Push and create PR                                            │
+│  - CI runs automatically (Python 3.10–3.13)                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -497,6 +518,8 @@ Before considering development complete:
 - [ ] Unit tests passed
 - [ ] Coverage maintained/improved
 - [ ] Final commit made
+- [ ] Push to remote
+- [ ] CI passes (Python 3.10–3.13)
 - [ ] PR created
 
 ---
