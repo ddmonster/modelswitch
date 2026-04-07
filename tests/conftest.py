@@ -64,6 +64,7 @@ def make_api_key(
     rate_limit=60,
     daily_limit=0,
     allowed_models=None,
+    roles=None,
 ):
     return ApiKeyConfig(
         key=key,
@@ -72,6 +73,7 @@ def make_api_key(
         rate_limit=rate_limit,
         daily_limit=daily_limit,
         allowed_models=allowed_models or [],
+        roles=roles or ["user"],
         created_at="2026-01-01T00:00:00",
         description="Test key",
     )
@@ -129,7 +131,7 @@ def sample_config():
         adapter_names=["provider-a"],
         model_names=["upstream-a"],
     )
-    key = make_api_key()
+    key = make_api_key(roles=["admin"])
     return make_config(
         providers=[p1, p2],
         models={"chain-model": m_chain, "direct-model": m_adapter},
@@ -311,7 +313,11 @@ async def client(sample_config):
     app.state.usage_tracker = tracker
 
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Authorization": "Bearer sk-test-admin"},
+    ) as c:
         yield c
     # Cleanup temp config file
     try:

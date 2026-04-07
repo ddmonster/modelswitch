@@ -20,7 +20,7 @@ class TestAuthMiddleware:
 
     @pytest.mark.asyncio
     async def test_v1_models_requires_auth(self, client):
-        resp = await client.get("/v1/models")
+        resp = await client.get("/v1/models", headers={"Authorization": ""})
         assert resp.status_code == 401
 
     @pytest.mark.asyncio

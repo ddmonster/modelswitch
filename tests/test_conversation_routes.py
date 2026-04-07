@@ -56,6 +56,7 @@ def make_api_key(
     enabled=True,
     rate_limit=60,
     daily_limit=0,
+    roles=None,
 ):
     return ApiKeyConfig(
         key=key,
@@ -64,6 +65,7 @@ def make_api_key(
         rate_limit=rate_limit,
         daily_limit=daily_limit,
         allowed_models=[],
+        roles=roles or ["user"],
         created_at="2026-01-01T00:00:00",
         description="Test key",
     )
@@ -149,11 +151,15 @@ def _create_test_app(config):
 async def client_with_temp_log_dir():
     """Create a client with a temporary log directory."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = make_config(log_dir=tmpdir)
+        config = make_config(log_dir=tmpdir, api_keys=[make_api_key(roles=["admin"])])
         app = _create_test_app(config)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer sk-test-admin"},
+        ) as c:
             c._tmp_log_dir = tmpdir
             c._app = app
             yield c
@@ -168,11 +174,15 @@ async def client_with_temp_log_dir():
 async def client_with_empty_log_dir():
     """Create a client with an empty log directory (no conversations file)."""
     with tempfile.TemporaryDirectory() as tmpdir:
-        config = make_config(log_dir=tmpdir)
+        config = make_config(log_dir=tmpdir, api_keys=[make_api_key(roles=["admin"])])
         app = _create_test_app(config)
 
         transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            headers={"Authorization": "Bearer sk-test-admin"},
+        ) as c:
             c._tmp_log_dir = tmpdir
             c._app = app
             yield c
