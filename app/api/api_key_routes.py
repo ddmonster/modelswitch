@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Request, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -16,6 +16,7 @@ class CreateKeyRequest(BaseModel):
     rate_limit: int = 60
     daily_limit: int = 0
     allowed_models: list[str] = []
+    roles: list[str] = ["user"]
 
 
 class UpdateKeyRequest(BaseModel):
@@ -44,6 +45,7 @@ async def create_key(req: CreateKeyRequest, request: Request):
         rate_limit=req.rate_limit,
         daily_limit=req.daily_limit,
         allowed_models=req.allowed_models,
+        roles=req.roles,
     )
     # 持久化到配置文件
     await _sync_config(request)
@@ -65,7 +67,9 @@ async def update_key(key: str, req: UpdateKeyRequest, request: Request):
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
     result = service.update(key, **updates)
     if not result:
-        return JSONResponse(status_code=404, content={"error": {"message": "API Key not found"}})
+        return JSONResponse(
+            status_code=404, content={"error": {"message": "API Key not found"}}
+        )
     # 更新配置并保存
     await _sync_config(request)
     return {"message": "API Key updated"}
@@ -76,7 +80,9 @@ async def delete_key(key: str, request: Request):
     """删除 API Key"""
     service = request.app.state.api_key_service
     if not service.delete(key):
-        return JSONResponse(status_code=404, content={"error": {"message": "API Key not found"}})
+        return JSONResponse(
+            status_code=404, content={"error": {"message": "API Key not found"}}
+        )
     await _sync_config(request)
     return {"message": "API Key deleted"}
 
@@ -87,18 +93,27 @@ async def toggle_key(key: str, request: Request):
     service = request.app.state.api_key_service
     result = service.toggle(key)
     if not result:
-        return JSONResponse(status_code=404, content={"error": {"message": "API Key not found"}})
+        return JSONResponse(
+            status_code=404, content={"error": {"message": "API Key not found"}}
+        )
     await _sync_config(request)
     return {"key": service.mask_key(key), "enabled": result.enabled}
 
 
 @router.get("/{key}/usage")
-async def key_usage(key: str, request: Request, date_from: Optional[str] = None, date_to: Optional[str] = None):
+async def key_usage(
+    key: str,
+    request: Request,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
     """获取指定 Key 的用量"""
     service = request.app.state.api_key_service
     key_config = service.get(key)
     if not key_config:
-        return JSONResponse(status_code=404, content={"error": {"message": "API Key not found"}})
+        return JSONResponse(
+            status_code=404, content={"error": {"message": "API Key not found"}}
+        )
 
     tracker = request.app.state.usage_tracker
     result = await tracker.aggregate(
@@ -123,4 +138,5 @@ async def _sync_config(request: Request):
 
     # 保存到文件
     from app.core.config import save_config
+
     save_config(config, request.app.state.config_path)

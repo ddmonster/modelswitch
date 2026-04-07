@@ -19,8 +19,15 @@ class ApiKeyService:
     def get(self, key: str) -> Optional[ApiKeyConfig]:
         return self._keys.get(key)
 
-    def create(self, name: str = "", description: str = "", rate_limit: int = 60,
-               daily_limit: int = 0, allowed_models: Optional[List[str]] = None) -> ApiKeyConfig:
+    def create(
+        self,
+        name: str = "",
+        description: str = "",
+        rate_limit: int = 60,
+        daily_limit: int = 0,
+        allowed_models: Optional[List[str]] = None,
+        roles: Optional[List[str]] = None,
+    ) -> ApiKeyConfig:
         key = f"sk-{secrets.token_urlsafe(32)}"
         key_config = ApiKeyConfig(
             key=key,
@@ -29,11 +36,19 @@ class ApiKeyService:
             rate_limit=rate_limit,
             daily_limit=daily_limit,
             allowed_models=allowed_models or [],
+            roles=roles or ["user"],
             created_at=datetime.now().isoformat(),
             description=description,
         )
         self._keys[key] = key_config
         return key_config
+
+    def has_role(self, key: str, role: str) -> bool:
+        """检查 key 是否拥有指定角色"""
+        config = self._keys.get(key)
+        if not config:
+            return False
+        return role in config.roles
 
     def update(self, key: str, **kwargs) -> Optional[ApiKeyConfig]:
         config = self._keys.get(key)
