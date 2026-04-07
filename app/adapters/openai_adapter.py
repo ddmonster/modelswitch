@@ -20,6 +20,26 @@ _OPENAI_STANDARD_PARAMS = {
 }
 
 
+def _make_reasoning_chunk(ref_chunk, model: str, reasoning_text: str):
+    """构造一个包含完整推理内容的合成流式 chunk（dict 格式）"""
+    if hasattr(ref_chunk, "id"):
+        chunk_id = ref_chunk.id
+        created = ref_chunk.created
+    else:
+        chunk_id = ref_chunk.get("id", "")
+        created = ref_chunk.get("created", 0)
+    return {
+        "id": chunk_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant", "content": reasoning_text},
+        }],
+    }
+
+
 class OpenAIAdapter(BaseAdapter):
     """基于 openai SDK 的适配器，兼容 DashScope / GLM / OpenAI 等 provider"""
 
@@ -117,6 +137,11 @@ class OpenAIAdapter(BaseAdapter):
                 async def stream_generator():
                     try:
                         chunk_count = 0
+                        content_chars = 0
+                        reasoning_buffer = []  # 缓存推理内容
+                        reasoning_flushed = False
+                        model_id = model_name  # 用于构造合成 chunk
+
                         async for chunk in response:
                             chunk_count += 1
                             # 捕获最终 chunk 中的 usage（stream_options.include_usage）
@@ -126,8 +151,61 @@ class OpenAIAdapter(BaseAdapter):
                                         "prompt_tokens": chunk.usage.prompt_tokens or 0,
                                         "completion_tokens": chunk.usage.completion_tokens or 0,
                                     }
-                            yield chunk
+
+                            if hasattr(chunk, "choices") and chunk.choices:
+                                choice = chunk.choices[0]
+                                # delta 可能是 SDK 对象或 mock dict
+                                if isinstance(choice, dict):
+                                    delta = choice.get("delta", {})
+                                    rc = delta.get("reasoning_content")
+                                    ct = delta.get("content")
+                                else:
+                                    delta = getattr(choice, "delta", None)
+                                    if delta is None:
+                                        continue
+                                    rc = getattr(delta, "reasoning_content", None)
+                                    ct = getattr(delta, "content", None)
+
+                                if rc:
+                                    reasoning_buffer.append(rc)
+                                if ct:
+                                    # 首次出现 content 时，一次性发送缓存的推理内容
+                                    if reasoning_buffer and not reasoning_flushed:
+                                        reasoning_text = "".join(reasoning_buffer)
+                                        content_chars += len(reasoning_text)
+                                        yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
+                                        reasoning_flushed = True
+                                    content_chars += len(ct)
+                                    yield chunk
+                                elif rc:
+                                    # 只有 reasoning_content，暂不发送（继续缓冲）
+                                    continue
+                                else:
+                                    # 既无 reasoning 也无 content（如 finish_reason chunk），直接透传
+                                    yield chunk
+                            else:
+                                yield chunk
+                        # 流结束：如果只有推理内容没有实际 content，也要刷新缓冲
+                        if reasoning_buffer and not reasoning_flushed:
+                            reasoning_text = "".join(reasoning_buffer)
+                            content_chars += len(reasoning_text)
+                            # 使用最后一个 chunk 作为模板（或构造最小 chunk）
+                            try:
+                                yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
+                            except Exception:
+                                pass
                         elapsed = (time.monotonic() - start) * 1000
+                        # Fallback: provider 未返回 usage 时，从流式内容估算 token 数
+                        if resp_ref is not None and resp_ref.usage is None and content_chars > 0:
+                            estimated = max(1, content_chars // 3)
+                            logger.debug(
+                                f"[{request_id}] usage_not_reported provider={self.name} "
+                                f"estimated_output_tokens={estimated} from {content_chars} chars"
+                            )
+                            resp_ref.usage = {
+                                "prompt_tokens": 0,
+                                "completion_tokens": estimated,
+                            }
                         logger.debug(
                             f"[{request_id}] stream_complete provider={self.name} "
                             f"chunks={chunk_count} elapsed={elapsed:.0f}ms"
@@ -150,6 +228,13 @@ class OpenAIAdapter(BaseAdapter):
                 resp_ref = adapter_resp
                 return adapter_resp
             else:
+                # 合并 reasoning_content 到 content（GLM 推理模型将输出放在 reasoning_content）
+                if hasattr(response, "choices"):
+                    for choice in response.choices:
+                        msg = choice.message
+                        reasoning = getattr(msg, "reasoning_content", None)
+                        if reasoning:
+                            msg.content = reasoning + (msg.content or "")
                 latency = (time.monotonic() - start) * 1000
                 usage = None
                 if response.usage:

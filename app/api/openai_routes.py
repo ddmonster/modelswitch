@@ -167,8 +167,15 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
         try:
             if result.stream:
                 async for chunk in result.stream:
+                    if isinstance(chunk, dict) and chunk.get("_stream_error"):
+                        yield f"data: {json.dumps(chunk.get('error', chunk), ensure_ascii=False)}\n\n"
+                        yield "data: [DONE]\n\n"
+                        return
+
                     if hasattr(chunk, "model_dump"):
                         chunk_data = chunk.model_dump(exclude_none=True)
+                    elif isinstance(chunk, dict):
+                        chunk_data = chunk
                     elif hasattr(chunk, "to_dict"):
                         chunk_data = chunk.to_dict()
                     else:
@@ -181,6 +188,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                             delta = choices[0].get("delta", {})
                             if delta.get("content"):
                                 collected_text.append(delta["content"])
+                            elif delta.get("reasoning_content"):
+                                collected_text.append(delta["reasoning_content"])
                             for tc in delta.get("tool_calls", []):
                                 idx = tc.get("index", 0)
                                 func = tc.get("function", {})

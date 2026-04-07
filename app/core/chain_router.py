@@ -273,6 +273,7 @@ class ChainRouter:
                 f"[{request_id}] trying adapter={ref.adapter} stream=true"
             )
 
+            has_sent = False
             try:
                 result = await adapter.chat_completion(
                     model_name=ref.model_name,
@@ -296,7 +297,6 @@ class ChainRouter:
 
                 # 探测首块
                 first_chunk = None
-                has_sent = False
                 chunk_count = 0
 
                 async for chunk in result.stream:
@@ -329,8 +329,11 @@ class ChainRouter:
                 logger.error(
                     f"[{request_id}] adapter={ref.adapter} stream_error: {e}"
                 )
+                # 已经向客户端发送了数据，不能再 fallback 到下一个 adapter
+                if has_sent:
+                    raise
                 continue
 
         # 所有适配器都失败了，yield 错误 chunk
         logger.error(f"[{request_id}] stream_chain_failed model={model}")
-        yield {"error": {"message": f"All adapters failed: {last_error}", "type": "upstream_error"}}
+        yield {"_stream_error": True, "error": {"message": f"All adapters failed: {last_error}", "type": "upstream_error"}}

@@ -173,12 +173,31 @@ class AnthropicAdapter(BaseAdapter):
         self, create_kwargs: dict, model_name: str, start: float, request_id: str
     ) -> AdapterResponse:
         raw_stream = await self._client.messages.create(stream=True, **create_kwargs)
+        resp_ref = None  # 用于在闭包中引用 AdapterResponse
 
         async def stream_generator():
             tool_call_index = -1
             try:
                 chunk_count = 0
                 async for event in raw_stream:
+                    # 从 Anthropic 流式事件中捕获 usage
+                    if event.type == "message_start" and hasattr(event, "message"):
+                        if hasattr(event.message, "usage"):
+                            input_tokens = getattr(event.message.usage, "input_tokens", 0) or 0
+                            if resp_ref is not None:
+                                resp_ref.usage = {
+                                    "prompt_tokens": input_tokens,
+                                    "completion_tokens": 0,
+                                }
+                    elif event.type == "message_delta" and hasattr(event, "usage"):
+                        output_tokens = getattr(event.usage, "output_tokens", 0) or 0
+                        if resp_ref is not None:
+                            current = resp_ref.usage or {}
+                            resp_ref.usage = {
+                                "prompt_tokens": current.get("prompt_tokens", 0),
+                                "completion_tokens": output_tokens,
+                            }
+
                     chunk = _anthropic_event_to_openai_chunk(
                         event, model_name, tool_call_index
                     )
@@ -201,7 +220,7 @@ class AnthropicAdapter(BaseAdapter):
                 raise
 
         latency = (time.monotonic() - start) * 1000
-        return AdapterResponse(
+        adapter_resp = AdapterResponse(
             status_code=200,
             success=True,
             stream=stream_generator(),
@@ -209,6 +228,8 @@ class AnthropicAdapter(BaseAdapter):
             model_name=model_name,
             latency_ms=latency,
         )
+        resp_ref = adapter_resp
+        return adapter_resp
 
 
 # ========== 格式转换工具函数 ==========

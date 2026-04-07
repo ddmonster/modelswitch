@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -91,6 +92,11 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     )
 
 
+async def _single_chunk_iter(chunk) -> AsyncIterator:
+    """将单个 chunk 包装为 async iterator"""
+    yield chunk
+
+
 def _convert_openai_to_anthropic_response(resp_data: dict, model: str) -> dict:
     """将 OpenAI ChatCompletion 响应转换为 Anthropic Messages 响应"""
     import uuid
@@ -174,6 +180,9 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
     async def capturing_stream(raw_stream):
         """包装原始流，在传给转换器之前累积输出内容"""
         async for chunk in raw_stream:
+            if isinstance(chunk, dict) and chunk.get("_stream_error"):
+                yield chunk
+                return
             if hasattr(chunk, "model_dump"):
                 chunk_data = chunk.model_dump(exclude_none=True)
             elif isinstance(chunk, dict):
@@ -187,6 +196,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                 delta = choices[0].get("delta", {})
                 if delta.get("content"):
                     collected_text.append(delta["content"])
+                elif delta.get("reasoning_content"):
+                    collected_text.append(delta["reasoning_content"])
                 for tc in delta.get("tool_calls", []):
                     idx = tc.get("index", 0)
                     func = tc.get("function", {})
@@ -204,10 +215,16 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
 
     async def generate():
         try:
-            async for chunk in openai_stream_to_anthropic(
-                capturing_stream(result.stream), model, request_id
-            ):
-                yield chunk
+            async for chunk in capturing_stream(result.stream):
+                if isinstance(chunk, dict) and chunk.get("_stream_error"):
+                    err = chunk.get("error", chunk)
+                    error_data = {"type": "error", "error": {"type": "api_error", "message": err.get("message", "All adapters failed")}}
+                    yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+                    return
+                async for anth_chunk in openai_stream_to_anthropic(
+                    _single_chunk_iter(chunk), model, request_id
+                ):
+                    yield anth_chunk
         except Exception as e:
             error_data = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"

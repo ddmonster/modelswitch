@@ -589,8 +589,10 @@ class TestDoChatCompletionStream:
         async for _ in result.stream:
             pass
 
-        # Usage should remain None if not provided
-        assert result.usage is None
+        # Usage is estimated from streamed content when provider doesn't return it
+        assert result.usage is not None
+        assert result.usage["prompt_tokens"] == 0
+        assert result.usage["completion_tokens"] >= 1  # "Hi" = 2 chars -> ~1 token
 
     @pytest.mark.asyncio
     async def test_stream_error_in_generator(self, provider_config):
