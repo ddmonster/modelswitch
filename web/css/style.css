@@ -1455,41 +1455,8 @@ tr:hover {
 }
 
 /* Login Modal */
-.login-modal {
-    max-width: 400px;
-    padding: 24px;
-}
-
-.login-modal .modal-header {
-    margin-bottom: 16px;
-}
-
-.login-modal .modal-body p {
-    margin-bottom: 16px;
-    color: var(--text-secondary);
-}
-
-.login-modal .form-group {
-    margin-bottom: 16px;
-}
-
-.login-modal .form-group label {
-    display: block;
-    margin-bottom: 8px;
-    font-weight: 500;
-}
-
-.login-modal .form-group input {
-    width: 100%;
-    padding: 12px;
-    border: 1px solid var(--border-color);
-    border-radius: 6px;
-    font-size: 14px;
-}
-
-.login-modal .modal-footer {
-    display: flex;
-    justify-content: flex-end;
+#login-modal .modal-content {
+    width: 400px;
 }
 
 /* Auth Indicator */

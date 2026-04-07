@@ -19,22 +19,18 @@
     </header>
 
     <!-- Login Modal -->
-    <div id="login-modal" class="modal-overlay" style="display: none;">
-        <div class="modal login-modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
-            <div class="modal-header">
-                <h3 id="login-title" data-i18n="auth.loginTitle">ModelSwitch 管理登录</h3>
+    <div id="login-modal" class="modal" style="display:none" role="dialog" aria-labelledby="login-title" aria-modal="true">
+        <div class="modal-content">
+            <h3 id="login-title" data-i18n="auth.loginTitle">ModelSwitch 管理登录</h3>
+            <p data-i18n="auth.required">请先登录以访问管理功能</p>
+            <div class="form-group">
+                <label for="login-api-key" data-i18n="auth.apiKey">管理员 API Key</label>
+                <input type="password" id="login-api-key"
+                       placeholder="sk-..."
+                       data-i18n-placeholder="auth.ph.apiKey"
+                       autocomplete="off">
             </div>
-            <div class="modal-body">
-                <p data-i18n="auth.required">请先登录以访问管理功能</p>
-                <div class="form-group">
-                    <label for="login-api-key" data-i18n="auth.apiKey">管理员 API Key</label>
-                    <input type="password" id="login-api-key"
-                           placeholder="sk-..."
-                           data-i18n-placeholder="auth.ph.apiKey"
-                           autocomplete="off">
-                </div>
-            </div>
-            <div class="modal-footer">
+            <div class="form-actions">
                 <button class="btn btn-primary" onclick="handleLogin()" data-i18n="auth.loginBtn">登录</button>
             </div>
         </div>
