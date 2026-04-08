@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import json
+
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.utils.message_converter import anthropic_to_openai_messages, openai_stream_to_anthropic
+from app.utils.message_converter import (
+    _to_dict,
+    anthropic_to_openai_messages,
+    convert_openai_to_anthropic_response,
+    openai_stream_to_anthropic,
+)
 
 router = APIRouter()
 
@@ -27,32 +33,85 @@ async def messages(request: Request):
         if allowed_models and model not in allowed_models:
             return JSONResponse(
                 status_code=403,
-                content={"type": "error", "error": {"type": "permission_error", "message": f"Model '{model}' not allowed"}},
+                content={
+                    "type": "error",
+                    "error": {
+                        "type": "permission_error",
+                        "message": f"Model '{model}' not allowed",
+                    },
+                },
             )
+
+    # C2 fix: 判断客户端是否请求了 thinking
+    thinking = body.get("thinking")
+    thinking_enabled = isinstance(thinking, dict) and thinking.get("type") == "enabled"
 
     # 将 Anthropic 请求转换为 OpenAI 格式
     openai_body = anthropic_to_openai_messages(body)
     messages_list = openai_body.pop("messages", [])
 
-    kwargs = {k: v for k, v in openai_body.items()
-              if v is not None and k not in ("model", "messages", "stream")
-              and not (isinstance(v, (list, dict)) and not v)}
+    kwargs = {
+        k: v
+        for k, v in openai_body.items()
+        if v is not None
+        and k not in ("model", "messages", "stream")
+        and not (isinstance(v, (list, dict)) and not v)
+    }
 
     if stream:
-        return await _handle_stream(request, chain_router, model, messages_list, request_id, kwargs)
+        return await _handle_stream(
+            request,
+            chain_router,
+            model,
+            messages_list,
+            request_id,
+            kwargs,
+            thinking_enabled=thinking_enabled,
+        )
     else:
-        return await _handle_non_stream(request, chain_router, model, messages_list, request_id, kwargs)
+        return await _handle_non_stream(
+            request,
+            chain_router,
+            model,
+            messages_list,
+            request_id,
+            kwargs,
+            thinking_enabled=thinking_enabled,
+        )
 
 
-async def _record(app_state, request_id, model, result, api_key_alias="",
-                  messages=None, stream_output=None):
+async def _record(
+    app_state,
+    request_id,
+    model,
+    result,
+    api_key_alias="",
+    messages=None,
+    stream_output=None,
+):
     """记录用量统计和日志"""
     from app.utils.tracking import track_request
-    await track_request(app_state, request_id, model, result, api_key_alias,
-                        messages=messages, stream_output=stream_output)
+
+    await track_request(
+        app_state,
+        request_id,
+        model,
+        result,
+        api_key_alias,
+        messages=messages,
+        stream_output=stream_output,
+    )
 
 
-async def _handle_non_stream(request, chain_router, model, messages, request_id, kwargs):
+async def _handle_non_stream(
+    request,
+    chain_router,
+    model,
+    messages,
+    request_id,
+    kwargs,
+    thinking_enabled=False,
+):
     """处理非流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
         model=model,
@@ -63,13 +122,17 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     )
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-    await _record(request.app.state, request_id, model, result, api_key_alias,
-                  messages=messages)
+    await _record(
+        request.app.state, request_id, model, result, api_key_alias, messages=messages
+    )
 
     if not result.success:
         return JSONResponse(
             status_code=result.status_code,
-            content={"type": "error", "error": {"type": "api_error", "message": result.error}},
+            content={
+                "type": "error",
+                "error": {"type": "api_error", "message": result.error},
+            },
         )
 
     resp = result.body
@@ -80,7 +143,10 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     else:
         resp_data = resp
 
-    anthropic_response = _convert_openai_to_anthropic_response(resp_data, model)
+    # C2/C3 fix: 传入 thinking_enabled，控制是否生成 thinking 块
+    anthropic_response = convert_openai_to_anthropic_response(
+        resp_data, model, thinking_enabled=thinking_enabled
+    )
 
     return JSONResponse(
         content=anthropic_response,
@@ -91,66 +157,15 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     )
 
 
-def _convert_openai_to_anthropic_response(resp_data: dict, model: str) -> dict:
-    """将 OpenAI ChatCompletion 响应转换为 Anthropic Messages 响应"""
-    import uuid
-
-    choices = resp_data.get("choices", [])
-    content = []
-    stop_reason = "end_turn"
-
-    if choices:
-        choice = choices[0]
-        message = choice.get("message", {})
-
-        # 处理 reasoning_content -> thinking 块
-        reasoning = message.get("reasoning_content")
-        if reasoning:
-            content.append({"type": "thinking", "thinking": reasoning})
-
-        msg_content = message.get("content", "")
-        if msg_content:
-            content.append({"type": "text", "text": msg_content})
-
-        # 处理 tool_calls
-        for tc in message.get("tool_calls", []):
-            tc_func = tc.get("function", {})
-            try:
-                tc_input = json.loads(tc_func.get("arguments", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                tc_input = {}
-            content.append({
-                "type": "tool_use",
-                "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
-                "name": tc_func.get("name", ""),
-                "input": tc_input,
-            })
-
-        finish_reason = choice.get("finish_reason", "stop")
-        stop_reason = {
-            "stop": "end_turn",
-            "length": "max_tokens",
-            "tool_calls": "tool_use",
-        }.get(finish_reason, "end_turn")
-
-    usage = resp_data.get("usage", {})
-
-    return {
-        "id": f"msg_{uuid.uuid4().hex[:24]}",
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "model": model,
-        "stop_reason": stop_reason,
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
-    }
-
-
-async def _handle_stream(request, chain_router, model, messages, request_id, kwargs):
+async def _handle_stream(
+    request,
+    chain_router,
+    model,
+    messages,
+    request_id,
+    kwargs,
+    thinking_enabled=False,
+):
     """处理流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
         model=model,
@@ -162,12 +177,22 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
 
     if not result.success:
         api_key_alias = getattr(request.state, "api_key_name", "")
-        await _record(request.app.state, request_id, model, result, api_key_alias,
-                      messages=messages)
+        await _record(
+            request.app.state,
+            request_id,
+            model,
+            result,
+            api_key_alias,
+            messages=messages,
+        )
 
         async def error_gen():
-            error_data = {"type": "error", "error": {"type": "api_error", "message": result.error}}
+            error_data = {
+                "type": "error",
+                "error": {"type": "api_error", "message": result.error},
+            }
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     api_key_alias = getattr(request.state, "api_key_name", "")
@@ -182,11 +207,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
             if isinstance(chunk, dict) and chunk.get("_stream_error"):
                 yield chunk
                 return
-            if hasattr(chunk, "model_dump"):
-                chunk_data = chunk.model_dump(exclude_none=True)
-            elif isinstance(chunk, dict):
-                chunk_data = chunk
-            else:
+            chunk_data = _to_dict(chunk)
+            if not isinstance(chunk_data, dict):
                 yield chunk
                 continue
 
@@ -225,17 +247,30 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                 yield chunk
 
         try:
+            # C2 fix: 传入 thinking_enabled，控制是否生成 thinking 块
             async for anth_chunk in openai_stream_to_anthropic(
-                capturing_stream(safe_stream(result.stream)), model, request_id
+                capturing_stream(safe_stream(result.stream)),
+                model,
+                request_id,
+                thinking_enabled=thinking_enabled,
             ):
                 yield anth_chunk
 
             # 如果所有 adapter 失败，发送错误事件
             if stream_error:
-                error_data = {"type": "error", "error": {"type": "api_error", "message": stream_error.get("message", "All adapters failed")}}
+                error_data = {
+                    "type": "error",
+                    "error": {
+                        "type": "api_error",
+                        "message": stream_error.get("message", "All adapters failed"),
+                    },
+                }
                 yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         except Exception as e:
-            error_data = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
+            error_data = {
+                "type": "error",
+                "error": {"type": "api_error", "message": str(e)},
+            }
             yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
         finally:
             info = getattr(result, "_stream_adapter_info", None)
@@ -252,12 +287,25 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                 parts.append({"type": "text", "text": "".join(collected_text)})
             for idx in sorted(collected_tool_calls):
                 tc = collected_tool_calls[idx]
-                parts.append({"type": "tool_use", "name": tc["name"], "arguments": tc["arguments"]})
+                parts.append(
+                    {
+                        "type": "tool_use",
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    }
+                )
             if parts:
                 stream_output = parts
 
-            await _record(request.app.state, request_id, model, result, api_key_alias,
-                          messages=messages, stream_output=stream_output)
+            await _record(
+                request.app.state,
+                request_id,
+                model,
+                result,
+                api_key_alias,
+                messages=messages,
+                stream_output=stream_output,
+            )
 
     return StreamingResponse(
         generate(),

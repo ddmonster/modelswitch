@@ -5,6 +5,8 @@ import json
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from app.utils.message_converter import _to_dict
+
 router = APIRouter()
 
 
@@ -16,24 +18,29 @@ async def list_models(request: Request):
     model_names = chain_router.list_models()
 
     import time
+
     models_data = []
     for name in model_names:
         model_config = chain_router.get_model(name)
-        models_data.append({
-            "id": name,
-            "object": "model",
-            "created": int(time.time()),
-            "owned_by": "modelswitch",
-            "permission": [],
-            "root": name,
-            "parent": None,
-            "description": model_config.description if model_config else "",
-        })
+        models_data.append(
+            {
+                "id": name,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "modelswitch",
+                "permission": [],
+                "root": name,
+                "parent": None,
+                "description": model_config.description if model_config else "",
+            }
+        )
 
-    return JSONResponse(content={
-        "object": "list",
-        "data": models_data,
-    })
+    return JSONResponse(
+        content={
+            "object": "list",
+            "data": models_data,
+        }
+    )
 
 
 @router.post("/openai/chat/completions")
@@ -54,15 +61,30 @@ async def chat_completions(request: Request):
         if allowed_models and model not in allowed_models:
             return JSONResponse(
                 status_code=403,
-                content={"error": {"message": f"Model '{model}' not allowed for this API key", "type": "forbidden"}},
+                content={
+                    "error": {
+                        "message": f"Model '{model}' not allowed for this API key",
+                        "type": "forbidden",
+                    }
+                },
             )
 
     request_id = getattr(request.state, "request_id", "")
 
     # 提取额外参数（跳过空列表/空字典，如 tools: [] 会被上游拒绝）
     kwargs = {}
-    for key in ("temperature", "top_p", "max_tokens", "stop", "presence_penalty",
-                "frequency_penalty", "user", "tools", "tool_choice", "response_format"):
+    for key in (
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "stop",
+        "presence_penalty",
+        "frequency_penalty",
+        "user",
+        "tools",
+        "tool_choice",
+        "response_format",
+    ):
         if key in body:
             val = body[key]
             if val is None or (isinstance(val, (list, dict)) and not val):
@@ -70,20 +92,41 @@ async def chat_completions(request: Request):
             kwargs[key] = val
 
     if stream:
-        return await _handle_stream(request, chain_router, model, messages, request_id, kwargs)
+        return await _handle_stream(
+            request, chain_router, model, messages, request_id, kwargs
+        )
     else:
-        return await _handle_non_stream(request, chain_router, model, messages, request_id, kwargs)
+        return await _handle_non_stream(
+            request, chain_router, model, messages, request_id, kwargs
+        )
 
 
-async def _record(app_state, request_id, model, result, api_key_alias,
-                  messages=None, stream_output=None):
+async def _record(
+    app_state,
+    request_id,
+    model,
+    result,
+    api_key_alias,
+    messages=None,
+    stream_output=None,
+):
     """记录用量和日志"""
     from app.utils.tracking import track_request
-    await track_request(app_state, request_id, model, result, api_key_alias,
-                        messages=messages, stream_output=stream_output)
+
+    await track_request(
+        app_state,
+        request_id,
+        model,
+        result,
+        api_key_alias,
+        messages=messages,
+        stream_output=stream_output,
+    )
 
 
-async def _handle_non_stream(request, chain_router, model, messages, request_id, kwargs):
+async def _handle_non_stream(
+    request, chain_router, model, messages, request_id, kwargs
+):
     """处理非流式请求"""
     result = await chain_router.execute_chat(
         model=model,
@@ -94,13 +137,20 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     )
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-    await _record(request.app.state, request_id, model, result, api_key_alias,
-                  messages=messages)
+    await _record(
+        request.app.state, request_id, model, result, api_key_alias, messages=messages
+    )
 
     if not result.success:
         return JSONResponse(
             status_code=result.status_code,
-            content={"error": {"message": result.error, "type": "upstream_error", "code": "server_error"}},
+            content={
+                "error": {
+                    "message": result.error,
+                    "type": "upstream_error",
+                    "code": "server_error",
+                }
+            },
             headers={"X-Request-ID": request_id},
         )
 
@@ -108,7 +158,12 @@ async def _handle_non_stream(request, chain_router, model, messages, request_id,
     if resp_body is None:
         return JSONResponse(
             status_code=500,
-            content={"error": {"message": "Empty response from upstream", "type": "upstream_error"}},
+            content={
+                "error": {
+                    "message": "Empty response from upstream",
+                    "type": "upstream_error",
+                }
+            },
         )
 
     if hasattr(resp_body, "model_dump"):
@@ -131,11 +186,18 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
     """处理流式请求"""
     model_config = chain_router.get_model(model)
     if not model_config:
-        error_msg = {"error": {"message": f"Model '{model}' not found", "type": "invalid_request_error"}}
+        error_msg = {
+            "error": {
+                "message": f"Model '{model}' not found",
+                "type": "invalid_request_error",
+            }
+        }
         error_json = json.dumps(error_msg)
+
         async def error_gen():
             yield f"data: {error_json}\n\n"
             yield "data: [DONE]\n\n"
+
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     result = await chain_router.execute_chat(
@@ -148,12 +210,19 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
 
     if not result.success:
         api_key_alias = getattr(request.state, "api_key_name", "")
-        await _record(request.app.state, request_id, model, result, api_key_alias,
-                      messages=messages)
+        await _record(
+            request.app.state,
+            request_id,
+            model,
+            result,
+            api_key_alias,
+            messages=messages,
+        )
 
         async def error_gen():
             yield f"data: {json.dumps({'error': {'message': result.error, 'type': 'upstream_error'}})}\n\n"
             yield "data: [DONE]\n\n"
+
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     adapter_name = result.adapter_name
@@ -172,13 +241,8 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                         yield "data: [DONE]\n\n"
                         return
 
-                    if hasattr(chunk, "model_dump"):
-                        chunk_data = chunk.model_dump(exclude_none=True)
-                    elif isinstance(chunk, dict):
-                        chunk_data = chunk
-                    elif hasattr(chunk, "to_dict"):
-                        chunk_data = chunk.to_dict()
-                    else:
+                    chunk_data = _to_dict(chunk)
+                    if not isinstance(chunk_data, dict):
                         chunk_data = str(chunk)
 
                     # 累积输出内容
@@ -202,7 +266,9 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                                     if func.get("name"):
                                         collected_tool_calls[idx]["name"] = func["name"]
                                     if func.get("arguments"):
-                                        collected_tool_calls[idx]["arguments"] += func["arguments"]
+                                        collected_tool_calls[idx]["arguments"] += func[
+                                            "arguments"
+                                        ]
 
                     yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
@@ -224,12 +290,25 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
                 parts.append({"type": "text", "text": "".join(collected_text)})
             for idx in sorted(collected_tool_calls):
                 tc = collected_tool_calls[idx]
-                parts.append({"type": "tool_use", "name": tc["name"], "arguments": tc["arguments"]})
+                parts.append(
+                    {
+                        "type": "tool_use",
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    }
+                )
             if parts:
                 stream_output = parts
 
-            await _record(request.app.state, request_id, model, result, api_key_alias,
-                          messages=messages, stream_output=stream_output)
+            await _record(
+                request.app.state,
+                request_id,
+                model,
+                result,
+                api_key_alias,
+                messages=messages,
+                stream_output=stream_output,
+            )
 
     return StreamingResponse(
         generate(),
