@@ -11,15 +11,30 @@ from app.models.config_models import GatewayConfig, resolve_config_env
 
 def load_config(config_path: str = "config.yaml") -> GatewayConfig:
     """从 YAML 文件加载配置，解析环境变量"""
+    from app.workspace import get_workspace, resolve_workspace
+
+    workspace = resolve_workspace()
+
     path = Path(config_path)
     if not path.exists():
-        return GatewayConfig()
+        config = GatewayConfig()
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f) or {}
+        config = GatewayConfig(**raw)
 
-    with open(path, "r", encoding="utf-8") as f:
-        raw = yaml.safe_load(f) or {}
-
-    config = GatewayConfig(**raw)
     config = resolve_config_env(config)
+    config = _make_paths_absolute(config, workspace)
+    return config
+
+
+def _make_paths_absolute(config: GatewayConfig, workspace: Path) -> GatewayConfig:
+    """将配置中相对路径转为 workspace 下的绝对路径"""
+    gw = config.gateway
+    if not Path(gw.log_dir).is_absolute():
+        gw.log_dir = str(workspace / gw.log_dir)
+    if not Path(gw.usage_db).is_absolute():
+        gw.usage_db = str(workspace / gw.usage_db)
     return config
 
 

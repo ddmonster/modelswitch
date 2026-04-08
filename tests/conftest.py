@@ -7,6 +7,9 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# Set workspace to a temp dir for test isolation
+os.environ.setdefault("MODELSWITCH_WORKSPACE", tempfile.mkdtemp())
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -291,7 +294,7 @@ def _create_test_app(config):
 
     from fastapi.responses import FileResponse
 
-    web_dir = PPath(__file__).parent.parent / "web"
+    web_dir = PPath(__file__).parent.parent / "app" / "web"
     if web_dir.exists():
         from fastapi.staticfiles import StaticFiles
 

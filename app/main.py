@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.core.chain_router import ChainRouter
-from app.core.config import load_config, save_config
+from app.core.config import load_config
 from app.core.middleware import GatewayMiddleware
 from app.core.request_queue import get_queue_manager
 from app.models.config_models import resolve_config_env
@@ -23,9 +23,11 @@ from app.services.conv_indexer import ConvIndexer, set_conv_indexer
 from app.services.usage_tracker import UsageTracker
 from app.utils.logging import setup_logging
 
-CONFIG_PATH = "config.yaml"
+from app.workspace import config_path, data_dir, resolve_workspace, web_dir as pkg_web_dir
 
 # ========== 模块级加载配置 ==========
+resolve_workspace()  # init from env var or default
+CONFIG_PATH = str(config_path())
 _initial_config = load_config(CONFIG_PATH)
 _initial_config = resolve_config_env(_initial_config)
 
@@ -88,7 +90,7 @@ async def lifespan(app: FastAPI):
     app.state.usage_tracker = usage_tracker
 
     # 4.5 初始化会话日志索引
-    conv_indexer = ConvIndexer(db_path=str(Path("data") / "conv_index.db"))
+    conv_indexer = ConvIndexer(db_path=str(data_dir() / "conv_index.db"))
     # Auto-rebuild if index is empty
     if conv_indexer.record_count() == 0:
         logger.info("会话索引为空，正在重建...")
@@ -128,7 +130,7 @@ async def lifespan(app: FastAPI):
     # 6. 配置热重载
     def reload_config():
         try:
-            new_config = load_config(CONFIG_PATH)
+            new_config = load_config(str(config_path()))
             new_config = resolve_config_env(new_config)
             app.state.config = new_config
             app.state.chain_router.reload_config(new_config)
@@ -235,7 +237,7 @@ app.include_router(conversation_router)
 
 # ========== 前端静态文件 ==========
 
-web_dir = Path(__file__).parent.parent / "web"
+web_dir = pkg_web_dir()
 if web_dir.exists():
     app.mount("/web", StaticFiles(directory=str(web_dir)), name="web")
 

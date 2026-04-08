@@ -11,3 +11,6 @@ config.yaml
 .pytest_cache/
 .qoder/
 .vscode/
+dist/
+*.egg-info/
+build/
