@@ -177,7 +177,7 @@ async def _handle_non_stream(
         content=response_data,
         headers={
             "X-Request-ID": request_id,
-            "X-Adapter-Name": result.adapter_name,
+            "X-Adapter-Name": (result.adapter_name or "").encode("latin-1", errors="replace").decode("latin-1"),
         },
     )
 
@@ -317,6 +317,6 @@ async def _handle_stream(request, chain_router, model, messages, request_id, kwa
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Request-ID": request_id,
-            "X-Adapter-Name": adapter_name or "",
+            "X-Adapter-Name": (adapter_name or "").encode("latin-1", errors="replace").decode("latin-1"),
         },
     )

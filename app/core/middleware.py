@@ -6,8 +6,8 @@ from typing import Dict, Optional
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.exceptions import AuthenticationError, GatewayError, RateLimitError
 
@@ -17,16 +17,13 @@ class RateLimiter:
 
     def __init__(self):
         # 每分钟限流：{api_key: [token_count, last_reset_time]}
-        self._minute_buckets: Dict[str, list] = defaultdict(
-            lambda: [0, time.monotonic()]
-        )
+        self._minute_buckets: Dict[str, list] = defaultdict(lambda: [0, time.monotonic()])
         # 每日限流：{api_key: [token_count, date_str]}
         self._daily_buckets: Dict[str, list] = defaultdict(lambda: [0, self._today()])
 
     @staticmethod
     def _today() -> str:
         from datetime import date
-
         return date.today().isoformat()
 
     def check(self, api_key: str, rate_limit: int, daily_limit: int) -> Optional[float]:
@@ -115,102 +112,12 @@ class GatewayMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # /api/* 路径需要鉴权
-        if path.startswith("/api/"):
-            # 认证
-            api_key, key_config = self._authenticate(request)
-            if not api_key:
-                response = JSONResponse(
-                    status_code=401,
-                    content={
-                        "error": {
-                            "message": "Authentication required",
-                            "type": "auth_error",
-                        }
-                    },
-                )
-                await response(scope, receive, send)
-                return
-
-            if not key_config.get("enabled", True):
-                response = JSONResponse(
-                    status_code=403,
-                    content={
-                        "error": {"message": "API key is disabled", "type": "forbidden"}
-                    },
-                )
-                await response(scope, receive, send)
-                return
-
-            # 检查过期
-            expires_at = key_config.get("expires_at")
-            if expires_at:
-                from datetime import datetime
-
-                try:
-                    if datetime.fromisoformat(expires_at) < datetime.now():
-                        response = JSONResponse(
-                            status_code=403,
-                            content={
-                                "error": {
-                                    "message": "API key has expired",
-                                    "type": "forbidden",
-                                }
-                            },
-                        )
-                        await response(scope, receive, send)
-                        return
-                except ValueError:
-                    pass
-
-            # 检查 admin 权限
-            if self._is_admin_required(path, request.method):
-                roles = key_config.get("roles", ["user"])
-                if "admin" not in roles:
-                    response = JSONResponse(
-                        status_code=403,
-                        content={
-                            "error": {
-                                "message": "Admin role required",
-                                "type": "forbidden",
-                            }
-                        },
-                    )
-                    await response(scope, receive, send)
-                    return
-
-            # 注入 key 信息到 scope["state"]
-            if "state" not in scope:
-                scope["state"] = {}
-            scope["state"]["api_key"] = api_key
-            key_name = key_config.get("name", "")
-            if not key_name:
-                key_name = (
-                    api_key[:3] + "****" + api_key[-4:]
-                    if len(api_key) > 7
-                    else api_key[:3] + "****"
-                )
-            scope["state"]["api_key_name"] = key_name
-            scope["state"]["api_key_config"] = key_config
-
-            # 注入角色信息
-            scope["state"]["api_key_roles"] = key_config.get("roles", ["user"])
-
-            await self.app(scope, receive, send)
-            return
-
-        # /v1/*, /openai/*, /anthropic/* — 原有鉴权逻辑保持不变
         # 认证
         api_key, key_config = self._authenticate(request)
         if not api_key:
             response = JSONResponse(
                 status_code=401,
-                content={
-                    "error": {
-                        "message": "Invalid or missing API key",
-                        "type": "auth_error",
-                    }
-                },
+                content={"error": {"message": "Invalid or missing API key", "type": "auth_error"}},
             )
             await response(scope, receive, send)
             return
@@ -218,9 +125,7 @@ class GatewayMiddleware:
         if not key_config.get("enabled", True):
             response = JSONResponse(
                 status_code=403,
-                content={
-                    "error": {"message": "API key is disabled", "type": "forbidden"}
-                },
+                content={"error": {"message": "API key is disabled", "type": "forbidden"}},
             )
             await response(scope, receive, send)
             return
@@ -229,17 +134,11 @@ class GatewayMiddleware:
         expires_at = key_config.get("expires_at")
         if expires_at:
             from datetime import datetime
-
             try:
                 if datetime.fromisoformat(expires_at) < datetime.now():
                     response = JSONResponse(
                         status_code=403,
-                        content={
-                            "error": {
-                                "message": "API key has expired",
-                                "type": "forbidden",
-                            }
-                        },
+                        content={"error": {"message": "API key has expired", "type": "forbidden"}},
                     )
                     await response(scope, receive, send)
                     return
@@ -253,9 +152,7 @@ class GatewayMiddleware:
         if retry_after is not None:
             response = JSONResponse(
                 status_code=429,
-                content={
-                    "error": {"message": "Rate limit exceeded", "type": "rate_limit"}
-                },
+                content={"error": {"message": "Rate limit exceeded", "type": "rate_limit"}},
                 headers={"Retry-After": str(int(retry_after))},
             )
             await response(scope, receive, send)
@@ -268,11 +165,7 @@ class GatewayMiddleware:
         key_name = key_config.get("name", "")
         if not key_name:
             # fallback: mask key as sk-****xxxx
-            key_name = (
-                api_key[:3] + "****" + api_key[-4:]
-                if len(api_key) > 7
-                else api_key[:3] + "****"
-            )
+            key_name = api_key[:3] + "****" + api_key[-4:] if len(api_key) > 7 else api_key[:3] + "****"
         scope["state"]["api_key_name"] = key_name
         scope["state"]["api_key_config"] = key_config
 
@@ -309,46 +202,29 @@ class GatewayMiddleware:
         return api_key, key_config
 
     def _is_public_path(self, path: str) -> bool:
-        """判断路径是否需要认证（完全不鉴权）"""
+        """判断路径是否需要认证"""
         public_paths = {
-            "/",
-            "/health",
-            "/metrics",
-            "/docs",
-            "/openapi.json",
-            "/redoc",
+            "/", "/health", "/metrics",
+            "/docs", "/openapi.json", "/redoc",
         }
         if path in public_paths:
             return True
         if path.startswith("/web/") or path.startswith("/static/"):
             return True
-        return False
-
-    def _is_admin_required(self, path: str, method: str) -> bool:
-        """判断路径是否需要 admin 角色
-
-        所有 /api/config/* 的 POST/PUT/DELETE/PATCH 需要 admin
-        所有 /api/keys/* 的 POST/PUT/DELETE/PATCH 需要 admin
-        GET /api/config/* 和 GET /api/keys/* 需要 admin（含完整配置）
-        GET /api/usage 和 GET /api/logs 只需要任意有效 key
-        GET /api/conversations 只需要任意有效 key
-        """
-        # /api/config/* — 全部需要 admin
-        if path.startswith("/api/config"):
+        if path.startswith("/api/logs") or path.startswith("/api/usage"):
             return True
-        # /api/keys/* — 全部需要 admin
+        if path.startswith("/api/config") or path.startswith("/api/providers"):
+            return True
         if path.startswith("/api/keys"):
+            return True
+        if path.startswith("/api/conversations"):
             return True
         return False
 
     def _add_cors_headers(self, response: Response) -> None:
         response.headers["Access-Control-Allow-Origin"] = "*"
-        response.headers["Access-Control-Allow-Methods"] = (
-            "GET, POST, PUT, DELETE, PATCH, OPTIONS"
-        )
-        response.headers["Access-Control-Allow-Headers"] = (
-            "Authorization, Content-Type, x-api-key, X-Request-ID"
-        )
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type, x-api-key, X-Request-ID"
 
     def _cors_response(self) -> Response:
         response = JSONResponse(content={})

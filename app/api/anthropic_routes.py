@@ -148,11 +148,12 @@ async def _handle_non_stream(
         resp_data, model, thinking_enabled=thinking_enabled
     )
 
+    adapter_name = (result.adapter_name or "").encode("latin-1", errors="replace").decode("latin-1")
     return JSONResponse(
         content=anthropic_response,
         headers={
             "X-Request-ID": request_id,
-            "X-Adapter-Name": result.adapter_name,
+            "X-Adapter-Name": adapter_name,
         },
     )
 
@@ -314,6 +315,6 @@ async def _handle_stream(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Request-ID": request_id,
-            "X-Adapter-Name": result.adapter_name or "",
+            "X-Adapter-Name": (result.adapter_name or "").encode("latin-1", errors="replace").decode("latin-1"),
         },
     )
