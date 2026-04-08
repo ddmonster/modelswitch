@@ -1626,6 +1626,9 @@ document.addEventListener("DOMContentLoaded", () => {
   document
     .getElementById("conv-detail")
     .addEventListener("click", function (e) {
+      // Don't toggle if user is selecting text
+      if (window.getSelection()?.toString()) return;
+
       const msg = e.target.closest(".conv-message");
       if (!msg) return;
 
