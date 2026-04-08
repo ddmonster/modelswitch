@@ -8,6 +8,7 @@ Usage:
     modelswitch --stop                    # stop system service
     modelswitch --restart                 # restart system service
     modelswitch --log                     # tail service logs
+    modelswitch --update                  # update modelswitch to latest version
     modelswitch --status                  # check if service is installed/running
     modelswitch --version                 # print version
 """
@@ -68,6 +69,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Tail service logs",
     )
     parser.add_argument(
+        "--update",
+        action="store_true",
+        help="Update modelswitch to the latest version",
+    )
+    parser.add_argument(
         "--status",
         action="store_true",
         help="Show service installation and workspace status",
@@ -85,6 +91,10 @@ def main(argv: list[str] | None = None) -> None:
         from app import __version__
 
         print(f"modelswitch {__version__}")
+        return
+
+    if args.update:
+        _cmd_update()
         return
 
     # Resolve workspace and ensure config exists
@@ -382,3 +392,34 @@ def _cmd_status(workspace: Path) -> None:
             print(f"Service:   installed ({plist_path})")
         else:
             print("Service:   not installed")
+
+
+# ── Update ────────────────────────────────────────────────────────────
+
+
+def _cmd_update() -> None:
+    """Update modelswitch to the latest version."""
+    from app import __version__
+
+    print(f"Current version: {__version__}")
+    print("Updating modelswitch...")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "--upgrade", "modelswitch"],
+        capture_output=False,
+    )
+
+    if result.returncode != 0:
+        print("Update failed.")
+        sys.exit(1)
+
+    # Re-import to get new version
+    import importlib
+    import app
+    importlib.reload(app)
+    new_version = app.__version__
+    print(f"Updated to: {new_version}")
+
+    if new_version != __version__:
+        print("Restart the service to use the new version:")
+        print("  modelswitch --restart")
