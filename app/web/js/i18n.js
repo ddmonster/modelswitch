@@ -190,6 +190,7 @@ window.I18N = {
       "conv.fold": "fold",
       "conv.expanded": "expanded",
       "conv.toolResult": "工具结果",
+      "conv.redacted": "[内容已屏蔽]",
 
       // Auth
       "auth.login": "登录",
@@ -210,6 +211,7 @@ window.I18N = {
       "role.assistant": "助手",
       "role.system": "系统",
       "role.tool": "工具结果",
+      "role.thinking": "思考过程",
 
       // Chain test table
       "chain.th.priority": "优先级",
@@ -408,6 +410,7 @@ window.I18N = {
       "conv.fold": "fold",
       "conv.expanded": "expanded",
       "conv.toolResult": "Tool Result",
+      "conv.redacted": "[Content redacted]",
 
       // Auth
       "auth.login": "Login",
@@ -428,6 +431,7 @@ window.I18N = {
       "role.assistant": "Assistant",
       "role.system": "System",
       "role.tool": "Tool Result",
+      "role.thinking": "Thinking",
 
       // Chain test table
       "chain.th.priority": "Priority",

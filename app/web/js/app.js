@@ -1327,6 +1327,13 @@ function renderMessage(msg) {
         if (!block || typeof block !== "object") return "";
         if (block.type === "text") {
           return renderMessageBubble(role, _roleLabel(role), block.text || "");
+        } else if (block.type === "thinking") {
+          const thinkingText = block.thinking || "";
+          if (!thinkingText) return "";
+          return `<div class="conv-message conv-msg-thinking">
+                    <div class="conv-message-role">${t("role.thinking")} ${_roleMeta(thinkingText.length)}</div>
+                    <div class="conv-thinking-content">${esc(thinkingText)}</div>
+                </div>`;
         } else if (block.type === "tool_use") {
           const inputStr = block.input || "";
           const inputLen =
@@ -1347,6 +1354,11 @@ function renderMessage(msg) {
           return `<div class="conv-message conv-msg-${_roleClass(role)}">
                     <div class="conv-message-role">${_roleLabel(role)}</div>
                     <div class="conv-message-content" style="color:#999">${t("common.image")}</div>
+                </div>`;
+        } else if (block.type === "redacted_thinking") {
+          return `<div class="conv-message conv-msg-thinking">
+                    <div class="conv-message-role">${t("role.thinking")} ${_roleMeta(0)}</div>
+                    <div class="conv-thinking-content" style="color:#999;font-style:italic">${t("conv.redacted")}</div>
                 </div>`;
         }
         return "";

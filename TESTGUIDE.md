@@ -92,7 +92,7 @@ Tests against a running server with real HTTP requests. These exercise the full 
 **Run:**
 ```bash
 # Start server first
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+modelswitch --start
 
 # Run e2e tests
 MODELSWITCH_E2E=1 pytest tests/test_e2e.py -v
@@ -157,7 +157,7 @@ MODELSWITCH_URL=http://localhost:8000 ./scripts/smoketest.sh
 | Variable | Description |
 |----------|-------------|
 | `LOG_LEVEL` | Logging level (DEBUG, INFO, WARNING) |
-| `CONFIG_PATH` | Path to config.yaml |
+| `MODELSWITCH_WORKSPACE` | Workspace directory (default `~/.modelswitch`) |
 
 ---
 
@@ -314,7 +314,7 @@ print(resp.json())
 **Solution:**
 ```bash
 # Start server
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+modelswitch --start
 
 # Or set correct URL
 MODELSWITCH_URL=http://your-server:8000 pytest tests/test_e2e.py -v
@@ -370,7 +370,7 @@ MODELSWITCH_ADMIN_KEY=your-api-key pytest tests/test_e2e.py -v
 **Solution:**
 ```bash
 # Install dependencies
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 # Run from project root
 cd modelswitch
@@ -396,7 +396,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt
+      - run: pip install -e .
       - run: python -m pytest tests/ --cov=app --cov-report=xml
       - uses: codecov/codecov-action@v4
 
@@ -410,7 +410,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-      - run: pip install -r requirements.txt
+      - run: pip install -e .
       - run: MODELSWITCH_E2E=1 pytest tests/test_e2e.py -v
 ```
 

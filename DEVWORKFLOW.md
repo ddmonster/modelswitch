@@ -12,13 +12,13 @@ Feature Request → Analysis → Git Commit → Development → Update Docs → 
 
 ## CI/CD
 
-GitHub Actions CI runs automatically on push/PR to `main` with Python 3.10–3.13 matrix.
+GitHub Actions CI runs automatically on push/PR to `main` and on `v*` tags (which also publish to PyPI and create a GitHub Release).
 
 **Workflow file:** `.github/workflows/ci.yml`
 
 ```bash
 # Local test before push (same as CI)
-pip install pytest pytest-asyncio pytest-timeout litellm==1.82.6
+pip install -e ".[dev]"
 python -m pytest tests/ -v --timeout=60
 ```
 
@@ -254,6 +254,7 @@ Based on changed files, select appropriate tests:
 | `app/models/*.py` | Config model tests, smoke test |
 | `app/services/*.py` | Service tests, smoke test |
 | `config.yaml` | Smoke test, e2e tests |
+| `app/workspace.py` | Unit tests, workspace resolution |
 
 #### 5.3 Always Run These Tests
 

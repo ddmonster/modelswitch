@@ -136,6 +136,10 @@ async def lifespan(app: FastAPI):
             app.state.chain_router.reload_config(new_config)
             app.state.api_key_service.reload(new_config.api_keys)
             _update_middleware_config(app, new_config)
+            # 同步队列管理器
+            to_remove = queue_manager.sync_providers(new_config.providers)
+            for name in to_remove:
+                queue_manager.unregister_provider(name)
         except Exception as e:
             logging.getLogger("modelswitch").error(f"热重载失败: {e}")
 

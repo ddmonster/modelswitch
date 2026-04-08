@@ -228,13 +228,7 @@ class OpenAIAdapter(BaseAdapter):
                 resp_ref = adapter_resp
                 return adapter_resp
             else:
-                # 合并 reasoning_content 到 content（GLM 推理模型将输出放在 reasoning_content）
-                if hasattr(response, "choices"):
-                    for choice in response.choices:
-                        msg = choice.message
-                        reasoning = getattr(msg, "reasoning_content", None)
-                        if reasoning:
-                            msg.content = reasoning + (msg.content or "")
+                # reasoning_content 由下游转换器处理为 thinking 块，无需合并
                 latency = (time.monotonic() - start) * 1000
                 usage = None
                 if response.usage:

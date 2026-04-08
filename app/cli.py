@@ -5,6 +5,9 @@ Usage:
     modelswitch --install                 # install systemd/launchd service
     modelswitch --uninstall               # remove systemd/launchd service
     modelswitch --start                   # start the server (foreground)
+    modelswitch --stop                    # stop system service
+    modelswitch --restart                 # restart system service
+    modelswitch --log                     # tail service logs
     modelswitch --status                  # check if service is installed/running
     modelswitch --version                 # print version
 """
@@ -17,6 +20,9 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+
+# systemd service paths
+_SYSTEMD_UNIT_PATH = Path("/etc/systemd/system/modelswitch.service")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -45,6 +51,21 @@ def main(argv: list[str] | None = None) -> None:
         "--start",
         action="store_true",
         help="Start the ModelSwitch server in foreground",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the system service",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the system service",
+    )
+    parser.add_argument(
+        "--log",
+        action="store_true",
+        help="Tail service logs",
     )
     parser.add_argument(
         "--status",
@@ -80,6 +101,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_install(workspace)
     elif args.uninstall:
         _cmd_uninstall()
+    elif args.stop:
+        _cmd_stop()
+    elif args.restart:
+        _cmd_restart()
+    elif args.log:
+        _cmd_log(workspace)
     elif args.start:
         _cmd_start(workspace)
     elif args.status:
@@ -91,6 +118,22 @@ def main(argv: list[str] | None = None) -> None:
             print("\nNew config created. Edit it before starting the server.")
         else:
             print("\nConfig exists. Run 'modelswitch --start' to launch the server.")
+
+
+# ── Service helpers ───────────────────────────────────────────────────
+
+
+def _systemd_unit_path() -> Path:
+    """Return the systemd unit file path."""
+    return _SYSTEMD_UNIT_PATH
+
+
+def _launchd_plist_name() -> str:
+    return "com.modelswitch.gateway"
+
+
+def _launchd_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_launchd_plist_name()}.plist"
 
 
 # ── Install commands ──────────────────────────────────────────────────
@@ -109,7 +152,7 @@ def _cmd_install(workspace: Path) -> None:
 
 
 def _install_systemd(workspace: Path) -> None:
-    """Generate and install systemd user unit file."""
+    """Generate and install systemd system unit file at /etc/systemd/system/."""
     unit_content = f"""\
 [Unit]
 Description=ModelSwitch LLM Gateway
@@ -124,28 +167,32 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 """
-    unit_dir = Path.home() / ".config" / "systemd" / "user"
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    unit_path = unit_dir / "modelswitch.service"
-    unit_path.write_text(unit_content)
+    unit_path = _systemd_unit_path()
+    try:
+        unit_path.write_text(unit_content)
+    except PermissionError:
+        print(f"ERROR: Permission denied writing to {unit_path}")
+        print("Try running with sudo: sudo modelswitch --install")
+        sys.exit(1)
 
-    # Enable lingering so the service runs without user login
-    subprocess.run(
-        ["loginctl", "enable-linger", os.environ.get("USER", "")],
-        check=False,
-    )
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    subprocess.run(["systemctl", "enable", "modelswitch"], check=False)
+    subprocess.run(["systemctl", "start", "modelswitch"], check=False)
 
-    print(f"Installed systemd user service: {unit_path}")
-    print("To start:  systemctl --user start modelswitch")
-    print("To enable: systemctl --user enable modelswitch")
-    print("To view logs: journalctl --user -u modelswitch -f")
+    print(f"Installed systemd service: {unit_path}")
+    print("Commands:")
+    print("  modelswitch --status    # check status")
+    print("  modelswitch --restart   # restart service")
+    print("  modelswitch --stop      # stop service")
+    print("  modelswitch --log       # view logs")
+    print("  journalctl -u modelswitch -f")
 
 
 def _install_launchd(workspace: Path) -> None:
     """Generate and install macOS launchd plist."""
-    plist_name = "com.modelswitch.gateway"
+    plist_name = _launchd_plist_name()
     plist_content = f"""\
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -183,12 +230,17 @@ def _install_launchd(workspace: Path) -> None:
 """
     plist_dir = Path.home() / "Library" / "LaunchAgents"
     plist_dir.mkdir(parents=True, exist_ok=True)
-    plist_path = plist_dir / f"{plist_name}.plist"
+    plist_path = _launchd_plist_path()
     plist_path.write_text(plist_content)
 
+    subprocess.run(["launchctl", "load", str(plist_path)], check=False)
+
     print(f"Installed launchd agent: {plist_path}")
-    print(f"To load:   launchctl load ~/Library/LaunchAgents/{plist_name}.plist")
-    print(f"Logs:      {workspace}/logs/launchd-stdout.log")
+    print("Commands:")
+    print("  modelswitch --status    # check status")
+    print("  modelswitch --restart   # restart service")
+    print("  modelswitch --stop      # stop service")
+    print("  modelswitch --log       # view logs")
 
 
 # ── Uninstall ─────────────────────────────────────────────────────────
@@ -198,26 +250,22 @@ def _cmd_uninstall() -> None:
     """Remove installed system service."""
     system = platform.system()
     if system == "Linux":
-        unit_path = (
-            Path.home() / ".config" / "systemd" / "user" / "modelswitch.service"
-        )
+        _cmd_stop()
+        unit_path = _systemd_unit_path()
         if unit_path.exists():
-            subprocess.run(
-                ["systemctl", "--user", "disable", "modelswitch"], check=False
-            )
-            subprocess.run(
-                ["systemctl", "--user", "stop", "modelswitch"], check=False
-            )
-            unit_path.unlink()
+            subprocess.run(["systemctl", "disable", "modelswitch"], check=False)
+            try:
+                unit_path.unlink()
+            except PermissionError:
+                print(f"ERROR: Permission denied removing {unit_path}")
+                print("Try running with sudo: sudo modelswitch --uninstall")
+                sys.exit(1)
+            subprocess.run(["systemctl", "daemon-reload"], check=False)
             print(f"Removed systemd service: {unit_path}")
-            print("Run 'systemctl --user daemon-reload' to clean up.")
         else:
             print("No systemd service found.")
     elif system == "Darwin":
-        plist_name = "com.modelswitch.gateway"
-        plist_path = (
-            Path.home() / "Library" / "LaunchAgents" / f"{plist_name}.plist"
-        )
+        plist_path = _launchd_plist_path()
         if plist_path.exists():
             subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
             plist_path.unlink()
@@ -228,7 +276,60 @@ def _cmd_uninstall() -> None:
         print(f"Service uninstall not supported on {platform.system()}")
 
 
-# ── Start ─────────────────────────────────────────────────────────────
+# ── Stop ──────────────────────────────────────────────────────────────
+
+
+def _cmd_stop() -> None:
+    """Stop the system service."""
+    system = platform.system()
+    if system == "Linux":
+        subprocess.run(["systemctl", "stop", "modelswitch"], check=False)
+        print("Service stopped.")
+    elif system == "Darwin":
+        subprocess.run(["launchctl", "unload", str(_launchd_plist_path())], check=False)
+        print("Service stopped.")
+    else:
+        print(f"Not supported on {system}")
+
+
+# ── Restart ───────────────────────────────────────────────────────────
+
+
+def _cmd_restart() -> None:
+    """Restart the system service."""
+    system = platform.system()
+    if system == "Linux":
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+        subprocess.run(["systemctl", "restart", "modelswitch"], check=False)
+        print("Service restarted.")
+    elif system == "Darwin":
+        subprocess.run(["launchctl", "unload", str(_launchd_plist_path())], check=False)
+        subprocess.run(["launchctl", "load", str(_launchd_plist_path())], check=False)
+        print("Service restarted.")
+    else:
+        print(f"Not supported on {system}")
+
+
+# ── Log ───────────────────────────────────────────────────────────────
+
+
+def _cmd_log(workspace: Path) -> None:
+    """Tail service logs."""
+    system = platform.system()
+    if system == "Linux":
+        os.execvp("journalctl", ["journalctl", "-u", "modelswitch", "-f"])
+    elif system == "Darwin":
+        log_file = workspace / "logs" / "launchd-stdout.log"
+        if log_file.exists():
+            os.execvp("tail", ["tail", "-f", str(log_file)])
+        else:
+            print(f"Log file not found: {log_file}")
+            print("Make sure the service is running.")
+    else:
+        print(f"Not supported on {system}")
+
+
+# ── Start (foreground) ────────────────────────────────────────────────
 
 
 def _cmd_start(workspace: Path) -> None:
@@ -266,17 +367,17 @@ def _cmd_status(workspace: Path) -> None:
     system = platform.system()
     if system == "Linux":
         result = subprocess.run(
-            ["systemctl", "--user", "is-active", "modelswitch"],
+            ["systemctl", "is-active", "modelswitch"],
             capture_output=True,
             text=True,
         )
         status = result.stdout.strip() if result.returncode == 0 else "not installed"
         print(f"Service:   {status}")
+        unit_path = _systemd_unit_path()
+        if unit_path.exists():
+            print(f"Unit file: {unit_path}")
     elif system == "Darwin":
-        plist_name = "com.modelswitch.gateway"
-        plist_path = (
-            Path.home() / "Library" / "LaunchAgents" / f"{plist_name}.plist"
-        )
+        plist_path = _launchd_plist_path()
         if plist_path.exists():
             print(f"Service:   installed ({plist_path})")
         else:

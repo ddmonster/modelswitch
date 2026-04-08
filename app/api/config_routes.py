@@ -227,17 +227,11 @@ async def _reload(request: Request, config):
     request.app.state.chain_router.reload_config(config)
     request.app.state.api_key_service.reload(config.api_keys)
 
-    # 更新队列管理器配置
+    # 同步队列管理器：注册/更新 max_concurrent > 0，注销 max_concurrent == 0
     queue_manager = get_queue_manager()
-    for provider in config.providers:
-        if provider.max_concurrent > 0:
-            # 重新注册或更新 provider 队列配置
-            queue_manager.register_provider(
-                provider_name=provider.name,
-                max_concurrent=provider.max_concurrent,
-                max_queue_size=provider.max_queue_size,
-                queue_timeout=provider.queue_timeout,
-            )
+    to_remove = queue_manager.sync_providers(config.providers)
+    for name in to_remove:
+        await queue_manager.unregister_provider(name)
 
     # Update middleware config by walking the middleware stack
     from app.core.middleware import GatewayMiddleware

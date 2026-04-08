@@ -89,7 +89,14 @@ def anthropic_to_openai_messages(data: dict) -> dict:
                 messages.append({"role": "assistant", "content": content})
             elif isinstance(content, list):
                 text_parts = [b.get("text", "") for b in content if b.get("type") == "text"]
+                thinking_parts = [b.get("thinking", "") for b in content if b.get("type") == "thinking"]
                 tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+
+                # 将 thinking 内容合并到 text 前面（OpenAI 不支持 thinking 块）
+                all_text_parts = []
+                if thinking_parts:
+                    all_text_parts.extend(thinking_parts)
+                all_text_parts.extend(text_parts)
 
                 if tool_use_blocks:
                     tool_calls = []
@@ -102,12 +109,12 @@ def anthropic_to_openai_messages(data: dict) -> dict:
                                 "arguments": json.dumps(b.get("input", {}), ensure_ascii=False),
                             }
                         })
-                    text_content = " ".join(text_parts) if text_parts else None
+                    text_content = " ".join(all_text_parts) if all_text_parts else None
                     messages.append({"role": "assistant", "content": text_content, "tool_calls": tool_calls})
                 else:
-                    messages.append({"role": "assistant", "content": " ".join(text_parts)})
+                    messages.append({"role": "assistant", "content": " ".join(all_text_parts)})
 
-    return {
+    result = {
         "model": data.get("model"),
         "messages": messages,
         "max_tokens": data.get("max_tokens"),
@@ -119,6 +126,15 @@ def anthropic_to_openai_messages(data: dict) -> dict:
         "tools": openai_tools,
         "tool_choice": openai_tool_choice,
     }
+
+    # 转发 thinking 参数到 extra_body（OpenAI 兼容 provider 可能支持）
+    thinking = data.get("thinking")
+    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+        result["reasoning_effort"] = "high"
+        if thinking.get("budget_tokens"):
+            result["max_tokens"] = thinking["budget_tokens"]
+
+    return result
 
 
 def _sse(event_type: str, data: dict) -> bytes:

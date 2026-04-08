@@ -57,6 +57,24 @@ class ProviderQueue:
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
 
+    def update_config(
+        self,
+        max_concurrent: int,
+        max_queue_size: int,
+        queue_timeout: float,
+    ):
+        """更新队列配置，重建信号量以反映新的并发限制。"""
+        self.max_concurrent = max_concurrent
+        self.max_queue_size = max_queue_size
+        self.queue_timeout = queue_timeout
+        # 用新限制重建信号量。当前限制约为允许的最大值，
+        # 因此新信号量从 max_concurrent 减去当前正在进行的请求数开始。
+        current_active = self.max_concurrent - self._semaphore._value
+        self._semaphore = asyncio.Semaphore(max(0, max_concurrent - current_active))
+        logger.info(
+            f"[{self.provider_name}] 队列配置已更新: 并发={max_concurrent}, 队列={max_queue_size}, 超时={queue_timeout}s"
+        )
+
     async def start(self):
         """启动队列处理器"""
         if not self._running:
@@ -228,16 +246,10 @@ class RequestQueueManager:
         max_queue_size: int = 100,
         queue_timeout: float = 300.0,
     ) -> ProviderQueue:
-        """注册 provider 队列"""
+        """注册或更新 provider 队列"""
         if provider_name in self._queues:
-            # 更新现有队列的配置
             queue = self._queues[provider_name]
-            queue.max_concurrent = max_concurrent
-            queue.max_queue_size = max_queue_size
-            queue.queue_timeout = queue_timeout
-            logger.info(
-                f"[{provider_name}] 队列配置已更新: 并发={max_concurrent}, 队列={max_queue_size}, 超时={queue_timeout}s"
-            )
+            queue.update_config(max_concurrent, max_queue_size, queue_timeout)
             return queue
 
         queue = ProviderQueue(
@@ -248,6 +260,37 @@ class RequestQueueManager:
         )
         self._queues[provider_name] = queue
         return queue
+
+    async def unregister_provider(self, provider_name: str):
+        """注销 provider 队列（当 max_concurrent 设为 0 时调用）"""
+        queue = self._queues.pop(provider_name, None)
+        if queue:
+            await queue.stop()
+            logger.info(f"[{provider_name}] 请求队列已注销")
+
+    def sync_providers(
+        self,
+        providers,  # list of provider configs with .name, .max_concurrent, .max_queue_size, .queue_timeout
+    ):
+        """同步队列管理器以匹配提供者配置。
+
+        - 注册或更新 max_concurrent > 0 的提供者
+        - 取消注册 max_concurrent == 0 的提供者
+        返回需要启动的队列列表。
+        """
+        registered = set()
+        for p in providers:
+            registered.add(p.name)
+            self.register_provider(
+                provider_name=p.name,
+                max_concurrent=p.max_concurrent,
+                max_queue_size=p.max_queue_size,
+                queue_timeout=p.queue_timeout,
+            )
+
+        # 注销已移除或已禁用的提供者（max_concurrent == 0）
+        to_remove = [name for name in self._queues if name not in registered]
+        return to_remove
 
     async def start(self):
         """启动所有队列"""

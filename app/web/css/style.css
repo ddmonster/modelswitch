@@ -958,6 +958,29 @@ tr:hover {
     color: var(--color-warning);
 }
 
+.conv-msg-thinking {
+    border-left-color: var(--color-accent);
+    background: var(--color-accent-light, rgba(99, 102, 241, 0.06));
+}
+
+.conv-msg-thinking .conv-message-role {
+    color: var(--color-accent);
+}
+
+.conv-thinking-content {
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--color-text-light);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 6px 8px;
+    background: rgba(0, 0, 0, 0.02);
+    border-radius: 4px;
+    font-family: var(--font-mono, monospace);
+}
+
 .conv-message-role {
     font-size: 11px;
     font-weight: 600;

@@ -102,8 +102,13 @@ def _convert_openai_to_anthropic_response(resp_data: dict, model: str) -> dict:
     if choices:
         choice = choices[0]
         message = choice.get("message", {})
-        msg_content = message.get("content", "")
 
+        # 处理 reasoning_content -> thinking 块
+        reasoning = message.get("reasoning_content")
+        if reasoning:
+            content.append({"type": "thinking", "thinking": reasoning})
+
+        msg_content = message.get("content", "")
         if msg_content:
             content.append({"type": "text", "text": msg_content})
 

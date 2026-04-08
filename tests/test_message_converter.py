@@ -105,6 +105,38 @@ class TestAnthropicToOpenaiMessages:
         assert result["stop"] == ["END"]
         assert result["stream"] is True
 
+    def test_thinking_param_converts_to_reasoning_effort(self):
+        """thinking.type=enabled should set reasoning_effort and use budget_tokens as max_tokens."""
+        result = anthropic_to_openai_messages({
+            "model": "test",
+            "thinking": {"type": "enabled", "budget_tokens": 10000},
+            "max_tokens": 8192,
+        })
+        assert result["reasoning_effort"] == "high"
+        assert result["max_tokens"] == 10000  # budget_tokens overrides max_tokens
+
+    def test_thinking_param_disabled_ignored(self):
+        """thinking.type=disabled should not affect conversion."""
+        result = anthropic_to_openai_messages({
+            "model": "test",
+            "thinking": {"type": "disabled"},
+            "max_tokens": 8192,
+        })
+        assert "reasoning_effort" not in result
+        assert result["max_tokens"] == 8192
+
+    def test_assistant_thinking_blocks_in_history(self):
+        """Prior assistant thinking blocks should be merged into text content."""
+        result = anthropic_to_openai_messages({
+            "messages": [{"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "Let me reason..."},
+                {"type": "text", "text": "The answer is 42"},
+            ]}],
+        })
+        msg = result["messages"][0]
+        assert "Let me reason" in msg["content"]
+        assert "The answer is 42" in msg["content"]
+
     # ========== Tools 转换 ==========
 
     def test_tools_conversion(self):
@@ -550,3 +582,29 @@ class TestConvertOpenaiToAnthropicResponse:
         resp = self._call({"choices": [], "usage": {}})
         assert resp["content"] == []
         assert resp["stop_reason"] == "end_turn"
+
+    def test_reasoning_content_emits_thinking_block(self):
+        """reasoning_content in non-stream response should become a thinking block."""
+        resp = self._call({
+            "choices": [{"message": {
+                "content": "The answer is 42",
+                "reasoning_content": "Let me think about this...",
+            }, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+        })
+        assert resp["content"][0]["type"] == "thinking"
+        assert resp["content"][0]["thinking"] == "Let me think about this..."
+        assert resp["content"][1]["type"] == "text"
+        assert resp["content"][1]["text"] == "The answer is 42"
+
+    def test_reasoning_content_only(self):
+        """reasoning_content without text content should still emit thinking block."""
+        resp = self._call({
+            "choices": [{"message": {
+                "content": "",
+                "reasoning_content": "Deep thoughts",
+            }, "finish_reason": "stop"}],
+        })
+        thinking_blocks = [b for b in resp["content"] if b["type"] == "thinking"]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0]["thinking"] == "Deep thoughts"

@@ -9,8 +9,23 @@ ModelSwitch is an LLM gateway proxy that exposes OpenAI-compatible and Anthropic
 ## Running the Server
 
 ```bash
-# Start server (default port 8000)
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# Install
+pip install -e .
+
+# Start server (default port 8000, workspace ~/.modelswitch)
+modelswitch --start
+
+# Custom workspace
+modelswitch --workspace /data/modelswitch --start
+
+# Install as system service (systemd on Linux, launchd on macOS)
+modelswitch --install
+
+# Service control
+modelswitch --status
+modelswitch --restart
+modelswitch --stop
+modelswitch --log
 
 # Docker
 docker-compose up --build
@@ -21,8 +36,8 @@ The server takes ~10s to start due to provider connection warmup. Health check: 
 ## Key Commands
 
 ```bash
-# Install dependencies (litellm is pinned to 1.82.6 — do not upgrade due to supply chain attack on 1.82.7/1.82.8)
-pip install -r requirements.txt
+# Install dev dependencies (litellm is pinned to 1.82.6 — do not upgrade due to supply chain attack on 1.82.7/1.82.8)
+pip install -e ".[dev]"
 
 # Run all tests (pytest-asyncio with strict mode)
 python -m pytest tests/ -v
@@ -85,7 +100,7 @@ Bidirectional conversion between Anthropic and OpenAI formats:
 
 - `openai_routes.py`: `GET /openai/models` (also `/v1/models`), `POST /openai/chat/completions` (also `/v1/chat/completions`)
 - `anthropic_routes.py`: `POST /anthropic/messages` (also `/v1/messages`) — converts to/from OpenAI internally, including full tool_use conversion
-- `config_routes.py`, `api_key_routes.py`: CRUD for providers/models/keys, writes back to `config.yaml`
+- `config_routes.py`, `api_key_routes.py`: CRUD for providers/models/keys, writes back to workspace `config.yaml`
 - `usage_routes.py`: Aggregated stats with `group_by` (provider/model/api_key) and drill-down
 - `log_routes.py`: Queries in-memory ring buffer (max 1000 entries)
 - `conversation_routes.py`: Queries conversation log files (multi-file discovery with metadata streaming, on-demand full record fetch)
@@ -102,15 +117,38 @@ Centralized `track_request()` called from both route files after chain_router re
 
 For streaming: `chain_router._execute_chat_stream` populates `_adapter_info` dict with adapter name, latency, and usage. Route handlers read this in the `finally` block after stream consumption and set on `result` before tracking.
 
+### Workspace (`app/workspace.py`)
+
+All runtime files live in a **workspace directory** (default `~/.modelswitch`, configurable via `--workspace` CLI flag or `MODELSWITCH_WORKSPACE` env var):
+
+- `config.yaml` — gateway configuration (hot-reloaded via watchdog)
+- `logs/` — rotating log files (`gateway.log`, `conversations.jsonl`)
+- `data/` — SQLite databases (`usage.db`, `conv_index.db`)
+
+`resolve_workspace()` is called at module import time in `app/main.py` and can be set before import via CLI or env var.
+
 ### Persistence
 
-- Config: `config.yaml` (hot-reloaded via watchdog)
-- Usage stats: SQLite at `data/usage.db`, batch-flushed every 10s
-- Logs: Rotating file at `logs/gateway.log` + in-memory deque buffer
+- Config: `<workspace>/config.yaml` (hot-reloaded via watchdog)
+- Usage stats: SQLite at `<workspace>/data/usage.db`, batch-flushed every 10s
+- Logs: Rotating file at `<workspace>/logs/gateway.log` + in-memory deque buffer
 
 ### Frontend
 
-Single-page app in `web/` (HTML/CSS/JS, no build step). 7 tabs: Providers, Models, API Keys, Queue Monitor, Usage Stats, Debug Logs, Conversations. Login modal requires admin API key. Token persisted in localStorage. Served at `/` and `/web/`.
+Single-page app bundled in `app/web/` (HTML/CSS/JS, no build step). 7 tabs: Providers, Models, API Keys, Queue Monitor, Usage Stats, Debug Logs, Conversations. Login modal requires admin API key. Token persisted in localStorage. Served at `/` and `/web/`.
+
+### CLI (`app/cli.py`)
+
+Console script entry point `modelswitch` with subcommands:
+- `--workspace DIR` — set workspace directory
+- `--start` — start server in foreground
+- `--stop` — stop system service
+- `--restart` — restart system service
+- `--log` — tail service logs
+- `--install` — install systemd/launchd service
+- `--uninstall` — remove system service
+- `--status` — show workspace and service status
+- `--version` — print version
 
 ## Key Patterns
 

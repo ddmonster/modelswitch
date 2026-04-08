@@ -43,7 +43,7 @@ End-to-end tests with real HTTP requests against a running server.
 **Usage:**
 ```bash
 # Start server first
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+modelswitch --start
 
 # Run e2e tests
 MODELSWITCH_E2E=1 pytest tests/test_e2e.py -v

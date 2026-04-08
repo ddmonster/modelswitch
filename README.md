@@ -7,6 +7,8 @@ ModelSwitch 是一个 LLM 网关代理，对外暴露 OpenAI 兼容和 Anthropic
 - **多协议支持**: 同时暴露 OpenAI 和 Anthropic 兼容 API，支持 Tool Use 双向转换
 - **智能路由**: Chain 模式自动 fallback、Circuit Breaker 熔断、流式首 chunk 探测
 - **配置热更新**: `config.yaml` 基于 watchdog 实时监听，修改即生效
+- **系统服务**: 支持 systemd（Linux）和 launchd（macOS）一键安装
+- **工作空间**: 所有运行时数据（配置、日志、数据库）统一管理，默认 `~/.modelswitch`
 - **用量追踪**: SQLite 持久化，按服务商/模型/API Key 多维统计
 - **对话日志**: 完整请求/响应记录到 JSONL，Web 端可回放浏览
 - **Web 管理 UI**: 6 个功能 Tab，支持中英文切换
@@ -15,14 +17,38 @@ ModelSwitch 是一个 LLM 网关代理，对外暴露 OpenAI 兼容和 Anthropic
 ## 快速开始
 
 ```bash
-# 安装依赖
-pip install -r requirements.txt
+# 安装
+pip install modelswitch
 
-# 启动服务
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+# 首次运行会自动创建 ~/.modelswitch/config.yaml
+modelswitch --start
+
+# 或指定工作目录
+modelswitch --workspace /data/modelswitch --start
 
 # 健康检查
 curl http://localhost:8000/api/config/health
+```
+
+### 从源码安装
+
+```bash
+git clone https://github.com/ddmonster/modelswitch.git
+cd modelswitch
+pip install -e ".[dev]"
+```
+
+### 安装为系统服务
+
+```bash
+# 安装 systemd（Linux）或 launchd（macOS）服务
+modelswitch --install
+
+# 查看状态
+modelswitch --status
+
+# 卸载服务
+modelswitch --uninstall
 ```
 
 ## API Key 使用指南
@@ -230,7 +256,9 @@ curl -s -X DELETE http://localhost:8000/api/keys/my-app \
 | `/api/usage`, `/api/logs`, `/api/conversations` | ✅ | 任意有效 Key |
 | `/api/config/*`, `/api/keys/*` | ✅ | admin |
 
-在 `config.yaml` 中给 API Key 添加 `roles` 字段来授予管理员权限：
+在配置文件中给 API Key 添加 `roles` 字段来授予管理员权限：
+
+配置文件位于工作空间目录（默认 `~/.modelswitch/config.yaml`，可通过 `--workspace` 或 `MODELSWITCH_WORKSPACE` 环境变量自定义）。
 
 ```yaml
 api_keys:
@@ -244,18 +272,18 @@ api_keys:
 
 ## 可用模型
 
-模型配置在 `config.yaml` 中定义，可根据上游提供商支持的模型自定义。
+模型配置在工作空间的 `config.yaml` 中定义，可根据上游提供商支持的模型自定义。
 
 ## 故障排查
 
 ### 日志查看
 
 ```bash
-# 请求日志
-tail -f logs/gateway.log
+# 请求日志（工作空间默认 ~/.modelswitch/logs/）
+tail -f ~/.modelswitch/logs/gateway.log
 
 # 会话日志（完整请求/响应）
-tail -f logs/conversations.jsonl
+tail -f ~/.modelswitch/logs/conversations.jsonl
 ```
 
 ### 常见问题
