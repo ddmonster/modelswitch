@@ -37,6 +37,11 @@ class ProviderConfig(BaseModel):
     max_concurrent: int = Field(default=0, description="最大并发请求数，0=不限制")
     max_queue_size: int = Field(default=100, description="最大队列长度")
     queue_timeout: float = Field(default=300.0, description="队列等待超时时间（秒）")
+    # vLLM 兼容性配置
+    disable_stream_options: bool = Field(
+        default=False,
+        description="禁用 stream_options.include_usage（用于 vLLM 等不支持的 provider）"
+    )
 
 
 class ModelAdapterRef(BaseModel):

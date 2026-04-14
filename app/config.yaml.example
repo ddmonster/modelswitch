@@ -31,6 +31,13 @@ providers:
     max_concurrent: 0      # 最大并发请求数，0=不限制
     max_queue_size: 100    # 最大队列长度
     queue_timeout: 300     # 队列等待超时时间（秒）
+  # vLLM 示例配置
+  # - name: vllm-local
+  #   provider: openai
+  #   base_url: http://localhost:8000/v1
+  #   api_key: EMPTY
+  #   enabled: true
+  #   disable_stream_options: true  # vLLM 不支持 stream_options.include_usage
 models:
   glm-5:
     mode: chain

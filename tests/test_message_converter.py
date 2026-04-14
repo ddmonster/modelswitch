@@ -91,6 +91,52 @@ class TestAnthropicToOpenaiMessages:
         assert content[1]["type"] == "image_url"
         assert "data:image/png;base64,base64data" == content[1]["image_url"]["url"]
 
+    def test_user_single_text_block_simplified_to_string(self):
+        """Single text block in list should be simplified to string content.
+        This ensures compatibility with providers that don't support array content (GLM/BigModel).
+        """
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Hello"}],
+                    }
+                ],
+            }
+        )
+        msgs = result["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        # Content should be a string, not a list
+        assert isinstance(msgs[0]["content"], str)
+        assert msgs[0]["content"] == "Hello"
+
+    def test_user_single_text_block_with_cache_control_preserved(self):
+        """Single text block with cache_control should preserve the marker."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Hello",
+                                "cache_control": {"type": "ephemeral"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        msgs = result["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert isinstance(msgs[0]["content"], str)
+        assert msgs[0]["content"] == "Hello"
+        assert msgs[0]["cache_control"] == {"type": "ephemeral"}
+
     def test_assistant_string_content(self):
         result = anthropic_to_openai_messages(
             {
@@ -1079,3 +1125,309 @@ class TestConvertOpenaiToAnthropicResponse:
         )
         assert len(resp["content"]) == 1
         assert resp["content"][0]["type"] == "text"
+
+
+# ========== New Features Tests ==========
+
+
+class TestOSeriesModels:
+    """Tests for o-series model handling."""
+
+    def test_o_series_detection(self):
+        """o-series models should be detected correctly."""
+        from app.utils.message_converter import is_openai_o_series
+
+        assert is_openai_o_series("o1") is True
+        assert is_openai_o_series("o1-preview") is True
+        assert is_openai_o_series("o1-mini") is True
+        assert is_openai_o_series("o3") is True
+        assert is_openai_o_series("o3-mini") is True
+        assert is_openai_o_series("o4-mini") is True
+        assert is_openai_o_series("gpt-4o") is False
+        assert is_openai_o_series("claude-3") is False
+
+    def test_o_series_uses_max_completion_tokens(self):
+        """o-series models should use max_completion_tokens instead of max_tokens."""
+        result = anthropic_to_openai_messages(
+            {
+                "model": "o3-mini",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 4096,
+            }
+        )
+        assert "max_tokens" not in result
+        assert result["max_completion_tokens"] == 4096
+
+    def test_non_o_series_keeps_max_tokens(self):
+        """Non o-series models should keep max_tokens."""
+        result = anthropic_to_openai_messages(
+            {
+                "model": "gpt-4o",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1024,
+            }
+        )
+        assert result["max_tokens"] == 1024
+        assert "max_completion_tokens" not in result
+
+    def test_o_series_with_budget_tokens(self):
+        """o-series with thinking.budget_tokens should use max_completion_tokens."""
+        result = anthropic_to_openai_messages(
+            {
+                "model": "o3",
+                "messages": [{"role": "user", "content": "hi"}],
+                "thinking": {"type": "enabled", "budget_tokens": 10000},
+            }
+        )
+        assert result["max_completion_tokens"] == 10000
+
+
+class TestReasoningEffortResolution:
+    """Tests for reasoning_effort resolution."""
+
+    def test_output_config_effort_high(self):
+        """output_config.effort should map to reasoning_effort."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"output_config": {"effort": "high"}}
+        assert resolve_reasoning_effort(body) == "high"
+
+    def test_output_config_effort_max(self):
+        """output_config.effort=max should map to xhigh."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"output_config": {"effort": "max"}}
+        assert resolve_reasoning_effort(body) == "xhigh"
+
+    def test_output_config_takes_priority(self):
+        """output_config.effort should take priority over thinking."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {
+            "output_config": {"effort": "low"},
+            "thinking": {"type": "adaptive"},
+        }
+        assert resolve_reasoning_effort(body) == "low"
+
+    def test_thinking_adaptive_maps_high(self):
+        """thinking.type=adaptive should map to high."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "adaptive"}}
+        assert resolve_reasoning_effort(body) == "high"
+
+    def test_budget_small_maps_low(self):
+        """Small budget_tokens should map to low effort."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 2000}}
+        assert resolve_reasoning_effort(body) == "low"
+
+    def test_budget_medium_maps_medium(self):
+        """Medium budget_tokens should map to medium effort."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 8000}}
+        assert resolve_reasoning_effort(body) == "medium"
+
+    def test_budget_large_maps_high(self):
+        """Large budget_tokens should map to high effort."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 20000}}
+        assert resolve_reasoning_effort(body) == "high"
+
+    def test_gpt5_with_output_config(self):
+        """GPT-5+ models should use reasoning_effort from output_config."""
+        result = anthropic_to_openai_messages(
+            {
+                "model": "gpt-5",
+                "messages": [{"role": "user", "content": "hi"}],
+                "output_config": {"effort": "medium"},
+            }
+        )
+        assert result["reasoning_effort"] == "medium"
+
+
+class TestCacheControlPreservation:
+    """Tests for cache_control preservation."""
+
+    def test_cache_control_on_system(self):
+        """cache_control on system blocks should be preserved."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "system": [
+                    {"type": "text", "text": "Be helpful", "cache_control": {"type": "ephemeral"}},
+                ],
+            }
+        )
+        assert result["messages"][0]["role"] == "system"
+        assert result["messages"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_cache_control_on_tools(self):
+        """cache_control on tools should be preserved."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "name": "test",
+                        "input_schema": {"type": "object"},
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        )
+        assert result["tools"][0]["cache_control"] == {"type": "ephemeral"}
+
+    def test_batchtool_filtered(self):
+        """BatchTool should be filtered from tools."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"name": "BatchTool", "type": "BatchTool"},
+                    {"name": "real_tool", "input_schema": {"type": "object"}},
+                ],
+            }
+        )
+        # After filtering BatchTool, only real_tool remains
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["function"]["name"] == "real_tool"
+
+
+class TestRefusalHandling:
+    """Tests for refusal block handling in responses."""
+
+    def test_refusal_in_content_parts(self):
+        """Refusal in content parts array should convert to text."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "Hello"},
+                                {"type": "refusal", "refusal": "I can't help"},
+                            ]
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "test",
+        )
+        text_blocks = [b for b in resp["content"] if b["type"] == "text"]
+        assert len(text_blocks) == 2
+        assert "I can't help" in [b["text"] for b in text_blocks]
+
+    def test_message_level_refusal(self):
+        """Message-level refusal should convert to text."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {"content": None, "refusal": "Content blocked"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "test",
+        )
+        text_blocks = [b for b in resp["content"] if b["type"] == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0]["text"] == "Content blocked"
+
+    def test_content_filter_finish_reason(self):
+        """content_filter finish_reason should map to end_turn."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "Blocked"},
+                        "finish_reason": "content_filter",
+                    }
+                ],
+            },
+            "test",
+        )
+        assert resp["stop_reason"] == "end_turn"
+
+
+class TestLegacyFunctionCall:
+    """Tests for legacy function_call format."""
+
+    def test_legacy_function_call(self):
+        """Legacy function_call should convert to tool_use."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "function_call": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Tokyo"}',
+                            },
+                        },
+                        "finish_reason": "function_call",
+                    }
+                ],
+            },
+            "test",
+        )
+        assert resp["content"][0]["type"] == "tool_use"
+        assert resp["content"][0]["name"] == "get_weather"
+        assert resp["content"][0]["input"]["city"] == "Tokyo"
+        assert resp["stop_reason"] == "tool_use"
+
+
+class TestCacheTokenMapping:
+    """Tests for cache token mapping in responses."""
+
+    def test_cached_tokens_mapped(self):
+        """prompt_tokens_details.cached_tokens should map to cache_read_input_tokens."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "prompt_tokens_details": {"cached_tokens": 80},
+                },
+            },
+            "test",
+        )
+        assert resp["usage"]["input_tokens"] == 100
+        assert resp["usage"]["output_tokens"] == 50
+        assert resp["usage"]["cache_read_input_tokens"] == 80
+
+    def test_direct_cache_fields(self):
+        """Direct cache fields should be preserved."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "cache_read_input_tokens": 60,
+                    "cache_creation_input_tokens": 20,
+                },
+            },
+            "test",
+        )
+        assert resp["usage"]["cache_read_input_tokens"] == 60
+        assert resp["usage"]["cache_creation_input_tokens"] == 20

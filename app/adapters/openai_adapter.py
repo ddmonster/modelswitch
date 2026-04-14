@@ -121,9 +121,10 @@ class OpenAIAdapter(BaseAdapter):
                 "timeout": timeout,
                 **standard_params,
             }
-            # 流式请求自动启用 usage 统计
+            # 流式请求自动启用 usage 统计（除非 provider 不支持）
             if stream and "stream_options" not in create_kwargs:
-                create_kwargs["stream_options"] = {"include_usage": True}
+                if not self.provider.disable_stream_options:
+                    create_kwargs["stream_options"] = {"include_usage": True}
             if extra_body:
                 create_kwargs["extra_body"] = extra_body
             if self.provider.custom_headers:

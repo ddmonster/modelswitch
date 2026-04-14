@@ -2,12 +2,142 @@ from __future__ import annotations
 
 import json
 import uuid
+import re
 from typing import Any, AsyncGenerator
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Reasoning/Thinking Helper Functions
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def is_openai_o_series(model: str) -> bool:
+    """Detect OpenAI o-series reasoning models (o1, o3, o4-mini, etc.).
+
+    These models require `max_completion_tokens` instead of `max_tokens`
+    and support `reasoning_effort` parameter.
+    """
+    return (
+        len(model) > 1
+        and model.startswith("o")
+        and model[1].isdigit()
+    )
+
+
+def is_gpt5_plus(model: str) -> bool:
+    """Detect OpenAI GPT-5+ models that support reasoning_effort."""
+    model_lower = model.lower()
+    if model_lower.startswith("gpt-"):
+        rest = model_lower[4:]
+        first_char = rest[0] if rest else ""
+        return first_char.isdigit() and int(first_char) >= 5
+    return False
+
+
+def supports_reasoning_effort(model: str) -> bool:
+    """Check if a model supports reasoning_effort parameter.
+
+    Supported families:
+    - o-series: o1, o3, o4-mini, etc.
+    - GPT-5+: gpt-5, gpt-5.1, gpt-5.4, gpt-5-codex, etc.
+    """
+    return is_openai_o_series(model) or is_gpt5_plus(model)
+
+
+def resolve_reasoning_effort(body: dict) -> str | None:
+    """Resolve the appropriate OpenAI `reasoning_effort` from an Anthropic request body.
+
+    Priority:
+    1. Explicit `output_config.effort` — preserves the user's intent directly.
+       `low`/`medium`/`high` map 1:1; `max` maps to `xhigh`
+       (supported by mainstream GPT models). Unknown values are ignored.
+    2. Fallback: `thinking.type` + `budget_tokens`:
+       - `adaptive` → `high` (mirrors optimizer semantics where adaptive ≈ max effort)
+       - `enabled` with budget → `low` (<4,000) / `medium` (4,000–15,999) / `high` (≥16,000)
+       - `enabled` without budget → `high` (conservative default)
+       - `disabled` / absent → `None`
+
+    Args:
+        body: Anthropic request body dict
+
+    Returns:
+        One of "low", "medium", "high", "xhigh", or None
+    """
+    # Priority 1: explicit output_config.effort
+    output_config = body.get("output_config", {})
+    effort = output_config.get("effort") if isinstance(output_config, dict) else None
+    if effort:
+        if effort in ("low", "medium", "high"):
+            return effort
+        if effort == "max":
+            return "xhigh"
+        # Unknown value — do not inject
+
+    # Priority 2: thinking.type + budget_tokens fallback
+    thinking = body.get("thinking")
+    if not thinking or not isinstance(thinking, dict):
+        return None
+
+    thinking_type = thinking.get("type")
+    if thinking_type == "adaptive":
+        return "high"
+    if thinking_type == "enabled":
+        budget = thinking.get("budget_tokens")
+        if budget is None:
+            return "high"  # enabled but no budget — assume strong reasoning
+        budget = int(budget)
+        if budget < 4000:
+            return "low"
+        elif budget < 16000:
+            return "medium"
+        return "high"
+
+    # disabled or unknown
+    return None
+
+
+def clean_json_schema(schema: dict) -> dict:
+    """Clean JSON schema by removing unsupported formats.
+
+    Some OpenAI-compatible endpoints don't support certain JSON schema formats
+    like `format: "uri"`. This function removes such unsupported formats.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    result = schema.copy()
+
+    # Remove unsupported format
+    if result.get("format") == "uri":
+        result.pop("format", None)
+
+    # Recursively clean nested schema
+    if "properties" in result and isinstance(result["properties"], dict):
+        result["properties"] = {
+            k: clean_json_schema(v) for k, v in result["properties"].items()
+        }
+
+    if "items" in result:
+        result["items"] = clean_json_schema(result["items"])
+
+    if "additionalProperties" in result and isinstance(result["additionalProperties"], dict):
+        result["additionalProperties"] = clean_json_schema(result["additionalProperties"])
+
+    return result
+
+
 def anthropic_to_openai_messages(data: dict) -> dict:
-    """将 Anthropic Messages API 请求体转换为 OpenAI 格式"""
+    """将 Anthropic Messages API 请求体转换为 OpenAI 格式
+
+    Features:
+    - Preserves cache_control markers for prompt caching
+    - Handles o-series models (uses max_completion_tokens)
+    - Maps thinking parameters to reasoning_effort with priority-based resolution
+    - Filters BatchTool (Anthropic internal tool type)
+    - Cleans JSON schema (removes unsupported formats like uri)
+    """
     messages = []
+    model = data.get("model", "")
 
     # Anthropic 的 system 是顶层字段
     system = data.get("system")
@@ -15,28 +145,48 @@ def anthropic_to_openai_messages(data: dict) -> dict:
         if isinstance(system, str):
             messages.append({"role": "system", "content": system})
         elif isinstance(system, list):
+            # Join system blocks into single message, preserving cache_control if any
             text_parts = []
+            has_cache_control = False
             for block in system:
                 if block.get("type") == "text":
                     text_parts.append(block.get("text", ""))
+                    if block.get("cache_control"):
+                        has_cache_control = True
             if text_parts:
-                messages.append({"role": "system", "content": " ".join(text_parts)})
+                sys_msg = {"role": "system", "content": " ".join(text_parts)}
+                # Only preserve cache_control on the first system message
+                if has_cache_control:
+                    for block in system:
+                        if block.get("type") == "text" and block.get("cache_control"):
+                            sys_msg["cache_control"] = block["cache_control"]
+                            break
+                messages.append(sys_msg)
 
-    # 转换 tools: Anthropic -> OpenAI
+    # 转换 tools: Anthropic -> OpenAI (过滤 BatchTool，保留 cache_control)
     openai_tools = None
     if "tools" in data:
         openai_tools = []
         for tool in data["tools"]:
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("input_schema", {}),
-                    },
-                }
-            )
+            # Filter BatchTool (Anthropic internal type)
+            if tool.get("type") == "BatchTool":
+                continue
+            openai_tool = {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": clean_json_schema(
+                        tool.get("input_schema", {})
+                    ),
+                },
+            }
+            # Preserve cache_control on tools
+            if tool.get("cache_control"):
+                openai_tool["cache_control"] = tool["cache_control"]
+            openai_tools.append(openai_tool)
+        if not openai_tools:
+            openai_tools = None
 
     # 转换 tool_choice: Anthropic -> OpenAI
     openai_tool_choice = None
@@ -72,9 +222,11 @@ def anthropic_to_openai_messages(data: dict) -> dict:
                 tool_results = []
                 for block in content:
                     if block.get("type") == "text":
-                        converted.append(
-                            {"type": "text", "text": block.get("text", "")}
-                        )
+                        text_part = {"type": "text", "text": block.get("text", "")}
+                        # Preserve cache_control on text blocks
+                        if block.get("cache_control"):
+                            text_part["cache_control"] = block["cache_control"]
+                        converted.append(text_part)
                     elif block.get("type") == "image":
                         source = block.get("source", {})
                         data_url = (
@@ -105,29 +257,47 @@ def anthropic_to_openai_messages(data: dict) -> dict:
                                 else "",
                             }
                         )
+                    # Note: thinking blocks in user messages are silently dropped
+                    # (OpenAI doesn't have an equivalent)
                 # H2 fix: user text first, then tool results
+                # Simplify: if only single text block (no images), use string content
+                # Some OpenAI-compatible providers (GLM/BigModel) don't support array content
                 if converted:
-                    messages.append({"role": "user", "content": converted})
+                    if len(converted) == 1 and converted[0].get("type") == "text":
+                        # Single text block -> simplify to string
+                        text_content = converted[0].get("text", "")
+                        # Preserve cache_control if present
+                        user_msg = {"role": "user", "content": text_content}
+                        if converted[0].get("cache_control"):
+                            user_msg["cache_control"] = converted[0]["cache_control"]
+                        messages.append(user_msg)
+                    else:
+                        messages.append({"role": "user", "content": converted})
                 messages.extend(tool_results)
         elif role == "assistant":
             if isinstance(content, str):
                 messages.append({"role": "assistant", "content": content})
             elif isinstance(content, list):
-                text_parts = [
-                    b.get("text", "") for b in content if b.get("type") == "text"
-                ]
-                thinking_parts = [
-                    b.get("thinking", "")
-                    for b in content
-                    if b.get("type") == "thinking"
-                ]
+                # Collect text and thinking parts
+                text_parts = []
+                thinking_parts = []
                 tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+                has_cache_control = False
 
-                # 将 thinking 内容合并到 text 前面（OpenAI 不支持 thinking 块）
-                all_text_parts = []
-                if thinking_parts:
-                    all_text_parts.extend(thinking_parts)
-                all_text_parts.extend(text_parts)
+                for block in content:
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                        if block.get("cache_control"):
+                            has_cache_control = True
+                    elif block.get("type") == "thinking":
+                        # Merge thinking into text for history preservation (OpenAI doesn't support thinking blocks)
+                        thinking_parts.append(block.get("thinking", ""))
+                        if block.get("cache_control"):
+                            has_cache_control = True
+
+                # Combine thinking and text parts
+                all_text_parts = thinking_parts + text_parts
+                combined_text = " ".join(all_text_parts) if all_text_parts else None
 
                 if tool_use_blocks:
                     tool_calls = []
@@ -144,23 +314,19 @@ def anthropic_to_openai_messages(data: dict) -> dict:
                                 },
                             }
                         )
-                    text_content = " ".join(all_text_parts) if all_text_parts else None
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": text_content,
-                            "tool_calls": tool_calls,
-                        }
-                    )
-                else:
-                    messages.append(
-                        {"role": "assistant", "content": " ".join(all_text_parts)}
-                    )
+                    # Build assistant message with content and tool_calls
+                    msg = {"role": "assistant", "tool_calls": tool_calls}
+                    if combined_text:
+                        msg["content"] = combined_text
+                    else:
+                        msg["content"] = None
+                    messages.append(msg)
+                elif combined_text:
+                    messages.append({"role": "assistant", "content": combined_text})
 
     result = {
-        "model": data.get("model"),
+        "model": model,
         "messages": messages,
-        "max_tokens": data.get("max_tokens"),
         "temperature": data.get("temperature"),
         "top_p": data.get("top_p"),
         "top_k": data.get("top_k"),
@@ -170,12 +336,35 @@ def anthropic_to_openai_messages(data: dict) -> dict:
         "tool_choice": openai_tool_choice,
     }
 
-    # 转发 thinking 参数到 extra_body（OpenAI 兼容 provider 可能支持）
+    # Handle max_tokens: o-series models need max_completion_tokens
+    max_tokens = data.get("max_tokens")
+    if max_tokens:
+        if is_openai_o_series(model):
+            result["max_completion_tokens"] = max_tokens
+        else:
+            result["max_tokens"] = max_tokens
+
+    # Map Anthropic thinking → OpenAI reasoning_effort
+    # For supported models: use sophisticated resolution
+    # For other models: use simple fallback (backward compatible)
+    if supports_reasoning_effort(model):
+        effort = resolve_reasoning_effort(data)
+        if effort:
+            result["reasoning_effort"] = effort
+    else:
+        # Backward compatible: simple mapping for non-reasoning models
+        thinking = data.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "enabled":
+            result["reasoning_effort"] = "high"
+
+    # Handle budget_tokens: it overrides max_tokens regardless of model type
     thinking = data.get("thinking")
-    if isinstance(thinking, dict) and thinking.get("type") == "enabled":
-        result["reasoning_effort"] = "high"
-        if thinking.get("budget_tokens"):
-            result["max_tokens"] = thinking["budget_tokens"]
+    if isinstance(thinking, dict) and thinking.get("budget_tokens"):
+        budget = thinking["budget_tokens"]
+        if is_openai_o_series(model):
+            result["max_completion_tokens"] = budget
+        else:
+            result["max_tokens"] = budget
 
     return result
 
@@ -189,76 +378,148 @@ def convert_openai_to_anthropic_response(
         resp_data: OpenAI 格式的响应 dict
         model: 模型名称
         thinking_enabled: 客户端是否请求了 thinking（决定是否生成 thinking 块）
+
+    Features:
+    - Handles refusal blocks (both content parts and message-level)
+    - Maps content_filter finish_reason to end_turn
+    - Maps cache token fields from OpenAI format to Anthropic format
+    - Handles legacy function_call format
     """
     choices = resp_data.get("choices", [])
     content = []
     stop_reason = "end_turn"
+    has_tool_use = False
 
     if choices:
         choice = choices[0]
         message = choice.get("message", {})
 
         reasoning = message.get("reasoning_content")
-        msg_content = message.get("content", "")
+        msg_content = message.get("content")
 
-        # C2/C3 fix: 根据 thinking_enabled 决定如何处理 reasoning_content
-        if reasoning and thinking_enabled:
-            content.append({"type": "thinking", "thinking": reasoning})
-
-        # 确定要输出的文本内容
-        text_to_emit = msg_content
-        if not thinking_enabled and reasoning:
-            # C3: thinking 未启用时，将 reasoning 合并到 text 块
-            if msg_content:
-                text_to_emit = reasoning + msg_content
+        # Handle content (string, array, or None)
+        if msg_content:
+            if isinstance(msg_content, str):
+                text_to_emit = msg_content
+                if not thinking_enabled and reasoning:
+                    text_to_emit = reasoning + msg_content
+                if thinking_enabled and reasoning:
+                    content.append({"type": "thinking", "thinking": reasoning})
+                if text_to_emit:
+                    content.append({"type": "text", "text": text_to_emit})
+            elif isinstance(msg_content, list):
+                # Content parts array - handle text, output_text, and refusal
+                for part in msg_content:
+                    part_type = part.get("type", "")
+                    if part_type in ("text", "output_text"):
+                        text = part.get("text", "")
+                        if text:
+                            content.append({"type": "text", "text": text})
+                    elif part_type == "refusal":
+                        refusal = part.get("refusal", "")
+                        if refusal:
+                            content.append({"type": "text", "text": refusal})
+        elif reasoning:
+            # Only reasoning content, no text
+            if thinking_enabled:
+                content.append({"type": "thinking", "thinking": reasoning})
             else:
-                text_to_emit = reasoning
+                content.append({"type": "text", "text": reasoning})
 
-        # M4 fix: content 为空字符串时也要生成 text 块（用 is not None 判断）
-        if text_to_emit is not None:
-            content.append({"type": "text", "text": text_to_emit})
+        # Handle message-level refusal (some providers put it here)
+        refusal = message.get("refusal")
+        if refusal and isinstance(refusal, str) and refusal:
+            content.append({"type": "text", "text": refusal})
 
-        # 处理 tool_calls
-        for tc in message.get("tool_calls", []):
-            tc_func = tc.get("function", {})
-            try:
-                tc_input = json.loads(tc_func.get("arguments", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                tc_input = {}
-            content.append(
-                {
-                    "type": "tool_use",
-                    "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
-                    "name": tc_func.get("name", ""),
-                    "input": tc_input,
-                }
-            )
+        # Handle tool_calls
+        tool_calls = message.get("tool_calls", [])
+        if tool_calls:
+            has_tool_use = True
+            for tc in tool_calls:
+                tc_func = tc.get("function", {})
+                try:
+                    tc_input = json.loads(tc_func.get("arguments", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    tc_input = {}
+                content.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
+                        "name": tc_func.get("name", ""),
+                        "input": tc_input,
+                    }
+                )
+
+        # Handle legacy function_call format
+        if not has_tool_use:
+            function_call = message.get("function_call")
+            if function_call:
+                fc_name = function_call.get("name", "")
+                fc_args = function_call.get("arguments")
+                fc_id = function_call.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
+                if fc_name or fc_args:
+                    try:
+                        if isinstance(fc_args, str):
+                            fc_input = json.loads(fc_args)
+                        else:
+                            fc_input = fc_args or {}
+                    except (json.JSONDecodeError, TypeError):
+                        fc_input = {}
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": fc_id,
+                            "name": fc_name,
+                            "input": fc_input,
+                        }
+                    )
+                    has_tool_use = True
 
         finish_reason = choice.get("finish_reason", "stop")
         stop_reason = {
             "stop": "end_turn",
             "length": "max_tokens",
             "tool_calls": "tool_use",
+            "function_call": "tool_use",
+            "content_filter": "end_turn",
         }.get(finish_reason, "end_turn")
+
+        # If we have tool_use but finish_reason doesn't indicate it, fix it
+        if has_tool_use and stop_reason != "tool_use":
+            stop_reason = "tool_use"
 
     # C3 fix: 如果 content 仍为空，添加空 text 块保证协议合规
     if not content:
         content.append({"type": "text", "text": ""})
 
+    # Build usage with cache token mapping
     usage = resp_data.get("usage", {})
+    anthropic_usage = {
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "output_tokens": usage.get("completion_tokens", 0),
+    }
+
+    # Map cache tokens from OpenAI format to Anthropic format
+    # OpenAI standard: prompt_tokens_details.cached_tokens
+    cached_tokens = usage.get("prompt_tokens_details", {}).get("cached_tokens")
+    if cached_tokens:
+        anthropic_usage["cache_read_input_tokens"] = cached_tokens
+
+    # Some compatible servers return these fields directly
+    if usage.get("cache_read_input_tokens"):
+        anthropic_usage["cache_read_input_tokens"] = usage["cache_read_input_tokens"]
+    if usage.get("cache_creation_input_tokens"):
+        anthropic_usage["cache_creation_input_tokens"] = usage["cache_creation_input_tokens"]
 
     return {
-        "id": f"msg_{uuid.uuid4().hex[:24]}",
+        "id": resp_data.get("id", f"msg_{uuid.uuid4().hex[:24]}"),
         "type": "message",
         "role": "assistant",
         "content": content,
         "model": model,
         "stop_reason": stop_reason,
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": usage.get("prompt_tokens", 0),
-            "output_tokens": usage.get("completion_tokens", 0),
-        },
+        "usage": anthropic_usage,
     }
 
 
@@ -297,6 +558,11 @@ async def openai_stream_to_anthropic(
 
     状态机: message_start -> [content_block_start -> delta* -> stop]* -> message_delta -> message_stop
 
+    Features:
+    - Handles signature_delta events for thinking blocks
+    - Maps content_filter finish_reason to end_turn
+    - Handles function_call finish_reason
+
     H1 fix: 使用递增计数器 next_block_index 分配块索引，
     不再基于 thinking/text 标志计算，避免 tool 先于 text 时索引冲突。
     """
@@ -310,6 +576,7 @@ async def openai_stream_to_anthropic(
     open_block_index = -1  # 当前打开的块索引，-1 表示无
     text_block_opened = False
     thinking_block_opened = False
+    thinking_signature = ""  # Track signature for thinking block
     tool_calls_map = {}  # {openai_tc_index: {"id", "name", "block_index"}}
 
     def _close_open_block():
@@ -432,12 +699,13 @@ async def openai_stream_to_anthropic(
                     block_idx = next_block_index
                     next_block_index += 1
                     open_block_index = block_idx
+                    # Note: We start with empty signature, it will be filled at the end
                     yield _sse(
                         "content_block_start",
                         {
                             "type": "content_block_start",
                             "index": block_idx,
-                            "content_block": {"type": "thinking", "thinking": ""},
+                            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
                         },
                     )
 
@@ -452,6 +720,23 @@ async def openai_stream_to_anthropic(
                         },
                     },
                 )
+
+            # Handle signature_delta for thinking blocks (some providers send this)
+            # OpenAI reasoning models don't send signatures, but Anthropic-native providers do
+            signature_delta = delta.get("signature")
+            if signature_delta is not None and thinking_block_opened and thinking_enabled:
+                yield _sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": open_block_index,
+                        "delta": {
+                            "type": "signature_delta",
+                            "signature": signature_delta,
+                        },
+                    },
+                )
+                thinking_signature = signature_delta
 
             # 处理文本 content
             if content is not None:
@@ -489,7 +774,17 @@ async def openai_stream_to_anthropic(
                     "stop": "end_turn",
                     "length": "max_tokens",
                     "tool_calls": "tool_use",
+                    "function_call": "tool_use",
+                    "content_filter": "end_turn",
                 }.get(finish, "end_turn")
+
+            # Handle OpenAI reasoning_tokens in usage (if present in delta)
+            # Some providers return usage in the final chunk
+            usage = chunk_data.get("usage", {})
+            if usage:
+                # We don't have input_tokens at this point, but we can track output_tokens
+                if usage.get("completion_tokens"):
+                    total_output_tokens = usage.get("completion_tokens", total_output_tokens)
 
     except Exception as e:
         import logging
