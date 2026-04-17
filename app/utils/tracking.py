@@ -9,6 +9,140 @@ from pathlib import Path
 
 _conv_logger = logging.getLogger("modelswitch.conversations")
 
+# Maximum content length to include in logs (characters)
+MAX_LOG_CONTENT_LENGTH = 200
+
+
+def _summarize_messages(messages: list) -> dict:
+    """Summarize messages for logging without full content.
+
+    Returns a summary with:
+    - total count
+    - per-role counts and content length stats
+    - truncated preview of first/last message content
+
+    Args:
+        messages: List of message dicts
+
+    Returns:
+        Summary dict suitable for logging
+    """
+    if not messages:
+        return {"count": 0}
+
+    summary = {
+        "count": len(messages),
+        "roles": {},
+        "preview": None,
+    }
+
+    role_stats = {}
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        content = msg.get("content", "")
+
+        # Calculate content length
+        if isinstance(content, str):
+            length = len(content)
+        elif isinstance(content, list):
+            # Content parts array
+            length = sum(
+                len(p.get("text", "")) if isinstance(p, dict) else 0
+                for p in content
+            )
+        else:
+            length = 0
+
+        if role not in role_stats:
+            role_stats[role] = {"count": 0, "total_chars": 0}
+        role_stats[role]["count"] += 1
+        role_stats[role]["total_chars"] += length
+
+    summary["roles"] = role_stats
+
+    # Add truncated preview of first user message
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                preview = content[:MAX_LOG_CONTENT_LENGTH]
+            elif isinstance(content, list):
+                # Get first text part
+                for p in content:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        preview = p.get("text", "")[:MAX_LOG_CONTENT_LENGTH]
+                        break
+                else:
+                    preview = ""
+            else:
+                preview = ""
+            if preview:
+                summary["preview"] = preview + ("..." if len(content) > MAX_LOG_CONTENT_LENGTH else "")
+            break
+
+    return summary
+
+
+def _summarize_output(output: list | None) -> dict | None:
+    """Summarize output for logging without full content.
+
+    Returns a summary with:
+    - total parts count
+    - per-type counts
+    - truncated text preview
+    - tool names (without arguments)
+
+    Args:
+        output: List of output parts (text, tool_use)
+
+    Returns:
+        Summary dict suitable for logging, or None if empty
+    """
+    if not output:
+        return None
+
+    summary = {
+        "count": len(output),
+        "types": {},
+        "text_preview": None,
+        "tools": [],
+    }
+
+    type_counts = {}
+    text_parts = []
+    tool_names = []
+
+    for part in output:
+        if not isinstance(part, dict):
+            continue
+
+        p_type = part.get("type", "unknown")
+        if p_type not in type_counts:
+            type_counts[p_type] = 0
+        type_counts[p_type] += 1
+
+        if p_type == "text":
+            text = part.get("text", "")
+            text_parts.append(text)
+        elif p_type == "tool_use":
+            name = part.get("name", "")
+            if name:
+                tool_names.append(name)
+
+    summary["types"] = type_counts
+
+    # Truncated text preview
+    if text_parts:
+        full_text = "".join(text_parts)
+        preview = full_text[:MAX_LOG_CONTENT_LENGTH]
+        summary["text_preview"] = preview + ("..." if len(full_text) > MAX_LOG_CONTENT_LENGTH else "")
+
+    # Tool names only (no arguments)
+    if tool_names:
+        summary["tools"] = tool_names
+
+    return summary
+
 
 class StreamAccumulator:
     """Accumulate streaming output for tracking/logging.
@@ -175,6 +309,9 @@ async def track_request(
     # 写入会话日志（conversations.jsonl）
     if messages is not None:
         output = stream_output if stream_output is not None else _extract_output(result)
+        # Summarize large content to avoid bloating logs
+        messages_summary = _summarize_messages(messages)
+        output_summary = _summarize_output(output)
         record = {
             "timestamp": datetime.now().isoformat(),
             "request_id": request_id,
@@ -185,8 +322,8 @@ async def track_request(
             "latency_ms": round(latency),
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
-            "messages": messages,
-            "output": output,
+            "messages_summary": messages_summary,
+            "output_summary": output_summary,
         }
         if not result.success:
             record["error"] = result.error
