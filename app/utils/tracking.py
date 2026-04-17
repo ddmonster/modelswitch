@@ -308,32 +308,44 @@ async def track_request(
     add_log_to_buffer(request_id, level, msg, api_key=api_key_alias)
 
     # 写入会话日志（conversations.jsonl）
-    # Only log conversation when there's actual output or it's a client-level error
-    # Provider-level failures (connection, timeout, circuit breaker) don't need full logging
     if messages is not None:
         output = stream_output if stream_output is not None else _extract_output(result)
 
-        # Always use summary to avoid log bloat
-        messages_summary = _summarize_messages(messages)
-        output_summary = _summarize_output(output)
-
-        record = {
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
-            "model": model,
-            "adapter": provider,
-            "api_key": api_key_alias,
-            "success": result.success,
-            "latency_ms": round(latency),
-            "tokens_in": tokens_in,
-            "tokens_out": tokens_out,
-            "messages_summary": messages_summary,
-            "output_summary": output_summary,
-        }
-        # Add error info without full messages
-        if not result.success:
-            record["error"] = result.error
-            record["status_code"] = result.status_code
+        # Success: keep full messages/output for conversation history
+        # Error: use summary to avoid log bloat
+        if result.success:
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "request_id": request_id,
+                "model": model,
+                "adapter": provider,
+                "api_key": api_key_alias,
+                "success": result.success,
+                "latency_ms": round(latency),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "messages": messages,  # Full messages for conversation history
+                "output": output,      # Full output for conversation history
+            }
+        else:
+            # Error: summarize to avoid log bloat, keep error details
+            messages_summary = _summarize_messages(messages)
+            output_summary = _summarize_output(output)
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "request_id": request_id,
+                "model": model,
+                "adapter": provider,
+                "api_key": api_key_alias,
+                "success": result.success,
+                "latency_ms": round(latency),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "messages_summary": messages_summary,
+                "output_summary": output_summary,
+                "error": result.error,
+                "status_code": result.status_code,
+            }
         try:
             _conv_logger.info(json.dumps(record, ensure_ascii=False))
             # Also index the record for fast queries
