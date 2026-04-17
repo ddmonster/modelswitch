@@ -309,24 +309,41 @@ async def track_request(
     # 写入会话日志（conversations.jsonl）
     if messages is not None:
         output = stream_output if stream_output is not None else _extract_output(result)
-        # Summarize large content to avoid bloating logs
-        messages_summary = _summarize_messages(messages)
-        output_summary = _summarize_output(output)
-        record = {
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
-            "model": model,
-            "adapter": provider,
-            "api_key": api_key_alias,
-            "success": result.success,
-            "latency_ms": round(latency),
-            "tokens_in": tokens_in,
-            "tokens_out": tokens_out,
-            "messages_summary": messages_summary,
-            "output_summary": output_summary,
-        }
-        if not result.success:
-            record["error"] = result.error
+
+        # On success: summarize to save space
+        # On error: keep full messages for debugging
+        if result.success:
+            messages_summary = _summarize_messages(messages)
+            output_summary = _summarize_output(output)
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "request_id": request_id,
+                "model": model,
+                "adapter": provider,
+                "api_key": api_key_alias,
+                "success": result.success,
+                "latency_ms": round(latency),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "messages_summary": messages_summary,
+                "output_summary": output_summary,
+            }
+        else:
+            # Error: include full messages for debugging
+            record = {
+                "timestamp": datetime.now().isoformat(),
+                "request_id": request_id,
+                "model": model,
+                "adapter": provider,
+                "api_key": api_key_alias,
+                "success": result.success,
+                "latency_ms": round(latency),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "error": result.error,
+                "status_code": result.status_code,
+                "messages": messages,  # Full messages for error debugging
+            }
         try:
             _conv_logger.info(json.dumps(record, ensure_ascii=False))
             # Also index the record for fast queries
