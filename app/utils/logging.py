@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import threading
@@ -25,12 +26,23 @@ class JSONFormatter(logging.Formatter):
     """JSON 结构化日志格式"""
 
     def format(self, record: logging.LogRecord) -> str:
+        # Get relative path from project root
+        pathname = record.pathname
+        # Try to make path relative to project
+        if "modelswitch" in pathname or "app" in pathname:
+            # Find app/ or modelswitch/ in path and use relative from there
+            for prefix in ["app/", "modelswitch/"]:
+                idx = pathname.find(prefix)
+                if idx >= 0:
+                    pathname = pathname[idx:]
+                    break
+
         log_entry = {
             "timestamp": datetime.fromtimestamp(record.created).isoformat(),
             "level": record.levelname,
             "message": record.getMessage(),
+            "location": f"{pathname}:{record.lineno}",
             "request_id": getattr(record, "request_id", ""),
-            "module": record.module,
         }
         return json.dumps(log_entry, ensure_ascii=False)
 
@@ -122,17 +134,47 @@ def get_conv_handler() -> Optional[TrackingRotatingFileHandler]:
     return _conv_handler
 
 
-def add_log_to_buffer(request_id: str, level: str, message: str, **extra) -> None:
+def add_log_to_buffer(
+    request_id: str,
+    level: str,
+    message: str,
+    location: str = "",
+    **extra
+) -> None:
     """添加日志到内存缓冲"""
-    _log_buffer.append(
-        {
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
-            "level": level,
-            "message": message,
-            **extra,
-        }
-    )
+    entry = {
+        "timestamp": datetime.now().isoformat(),
+        "request_id": request_id,
+        "level": level,
+        "message": message,
+    }
+    if location:
+        entry["location"] = location
+    entry.update(extra)
+    _log_buffer.append(entry)
+
+
+def _get_caller_location(skip_frames: int = 2) -> str:
+    """Get caller's file path and line number.
+
+    Args:
+        skip_frames: Number of frames to skip (default 2 for this function + caller)
+
+    Returns:
+        Relative path with line number, e.g., "app/api/routes.py:42"
+    """
+    frame = inspect.stack()[skip_frames]
+    filename = frame.filename
+    lineno = frame.lineno
+
+    # Make path relative to project
+    for prefix in ["app/", "modelswitch/"]:
+        idx = filename.find(prefix)
+        if idx >= 0:
+            filename = filename[idx:]
+            break
+
+    return f"{filename}:{lineno}"
 
 
 def get_log_buffer() -> list:
@@ -222,10 +264,12 @@ class AdapterLogger:
         # Only add to buffer for info/warning/error levels (skip debug)
         # Debug logs are too verbose for in-memory buffer and journalctl
         if level >= logging.INFO:
+            location = _get_caller_location(skip_frames=3)  # Skip _log -> debug/info/warning/error -> actual caller
             add_log_to_buffer(
                 self.request_id,
                 logging.getLevelName(level),
                 full_msg,
+                location=location,
                 api_key=context.get("api_key", ""),
             )
 
@@ -322,16 +366,19 @@ class AdapterLogger:
         upstream_response: str | None = None,
     ) -> None:
         """Log adapter error with details."""
+        # Include upstream response preview in error log for debugging
+        error_preview = error_message[:500]
+        if upstream_response:
+            error_preview += f" | upstream: {upstream_response[:300]}"
+
         self.error(
             f"adapter_error",
             model=model,
             error_type=error_type,
             status=status_code,
             latency_ms=f"{latency_ms:.0f}",
-            error=error_message[:200],
+            error=error_preview,
         )
-        if upstream_response:
-            self.debug(f"upstream_response_preview {upstream_response[:500]}")
 
     def log_parse_error(
         self,

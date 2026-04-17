@@ -166,13 +166,25 @@ class OpenAIAdapter(BaseAdapter):
 
         except APIStatusError as e:
             latency = (time.monotonic() - start) * 1000
+            # Get detailed upstream error info
+            upstream_detail = ""
+            if e.response:
+                try:
+                    # Try to get response body as text
+                    if hasattr(e.response, "text"):
+                        upstream_detail = e.response.text[:500]
+                    elif hasattr(e.response, "content"):
+                        upstream_detail = str(e.response.content)[:500]
+                except Exception:
+                    upstream_detail = str(e.response)[:300]
+
             adapter_logger.log_error(
                 model=model_name,
                 error_type="api_status",
                 error_message=str(e),
                 latency_ms=latency,
                 status_code=e.status_code,
-                upstream_response=str(e.response) if e.response else "",
+                upstream_response=upstream_detail,
             )
             return create_error_response(
                 self.name, model_name, latency, e.status_code, str(e), request_id
