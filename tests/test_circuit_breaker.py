@@ -9,13 +9,21 @@ class TestCircuitBreakerInit:
         cb = CircuitBreaker()
         assert cb.state == CircuitState.CLOSED
         assert cb.failure_threshold == 5
-        assert cb.recovery_timeout == 30
+        assert cb.recovery_timeout == 5  # Default capped to max 5s
         assert cb.failure_count == 0
 
-    def test_custom_values(self):
+    def test_custom_values_capped_to_max(self):
+        # Custom values > 5 are capped to max 5s
         cb = CircuitBreaker(failure_threshold=3, recovery_timeout=10, half_open_max=2)
         assert cb.failure_threshold == 3
-        assert cb.recovery_timeout == 10
+        assert cb.recovery_timeout == 5  # Capped to max 5s
+        assert cb.half_open_max == 2
+
+    def test_custom_values_below_max(self):
+        # Custom values <= 5 are preserved
+        cb = CircuitBreaker(failure_threshold=3, recovery_timeout=3, half_open_max=2)
+        assert cb.failure_threshold == 3
+        assert cb.recovery_timeout == 3  # Below max, preserved
         assert cb.half_open_max == 2
 
 
@@ -25,7 +33,7 @@ class TestCanExecute:
         assert cb.can_execute() is True
 
     def test_open_blocks_before_timeout(self):
-        cb = CircuitBreaker(recovery_timeout=60)
+        cb = CircuitBreaker(recovery_timeout=5)  # Max allowed
         cb.state = CircuitState.OPEN
         cb.last_failure_time = time.monotonic()
         assert cb.can_execute() is False

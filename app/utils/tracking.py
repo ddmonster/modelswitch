@@ -283,9 +283,10 @@ async def track_request(
     provider = getattr(result, "adapter_name", "") or "unknown"
     latency = getattr(result, "latency_ms", 0) or 0
 
-    # 记录用量统计
+    # 记录用量统计 - only for successful requests
+    # Failed provider requests shouldn't contribute to usage stats
     usage_tracker = getattr(app_state, "usage_tracker", None)
-    if usage_tracker:
+    if usage_tracker and result.success:
         await usage_tracker.record(
             provider=provider,
             model=model,
@@ -307,43 +308,32 @@ async def track_request(
     add_log_to_buffer(request_id, level, msg, api_key=api_key_alias)
 
     # 写入会话日志（conversations.jsonl）
+    # Only log conversation when there's actual output or it's a client-level error
+    # Provider-level failures (connection, timeout, circuit breaker) don't need full logging
     if messages is not None:
         output = stream_output if stream_output is not None else _extract_output(result)
 
-        # On success: summarize to save space
-        # On error: keep full messages for debugging
-        if result.success:
-            messages_summary = _summarize_messages(messages)
-            output_summary = _summarize_output(output)
-            record = {
-                "timestamp": datetime.now().isoformat(),
-                "request_id": request_id,
-                "model": model,
-                "adapter": provider,
-                "api_key": api_key_alias,
-                "success": result.success,
-                "latency_ms": round(latency),
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-                "messages_summary": messages_summary,
-                "output_summary": output_summary,
-            }
-        else:
-            # Error: include full messages for debugging
-            record = {
-                "timestamp": datetime.now().isoformat(),
-                "request_id": request_id,
-                "model": model,
-                "adapter": provider,
-                "api_key": api_key_alias,
-                "success": result.success,
-                "latency_ms": round(latency),
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-                "error": result.error,
-                "status_code": result.status_code,
-                "messages": messages,  # Full messages for error debugging
-            }
+        # Always use summary to avoid log bloat
+        messages_summary = _summarize_messages(messages)
+        output_summary = _summarize_output(output)
+
+        record = {
+            "timestamp": datetime.now().isoformat(),
+            "request_id": request_id,
+            "model": model,
+            "adapter": provider,
+            "api_key": api_key_alias,
+            "success": result.success,
+            "latency_ms": round(latency),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "messages_summary": messages_summary,
+            "output_summary": output_summary,
+        }
+        # Add error info without full messages
+        if not result.success:
+            record["error"] = result.error
+            record["status_code"] = result.status_code
         try:
             _conv_logger.info(json.dumps(record, ensure_ascii=False))
             # Also index the record for fast queries

@@ -219,13 +219,15 @@ class AdapterLogger:
             if v is not None:
                 full_msg += f" {k}={v}"
         self._logger.log(level, full_msg, extra=extra)
-        # Also add to buffer
-        add_log_to_buffer(
-            self.request_id,
-            logging.getLevelName(level),
-            full_msg,
-            api_key=context.get("api_key", ""),
-        )
+        # Only add to buffer for info/warning/error levels (skip debug)
+        # Debug logs are too verbose for in-memory buffer and journalctl
+        if level >= logging.INFO:
+            add_log_to_buffer(
+                self.request_id,
+                logging.getLevelName(level),
+                full_msg,
+                api_key=context.get("api_key", ""),
+            )
 
     def debug(self, message: str, **context) -> None:
         self._log(logging.DEBUG, message, **context)

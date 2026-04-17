@@ -16,11 +16,23 @@ class CircuitState(Enum):
 
 
 class CircuitBreaker:
-    """每个 provider 实例一个熔断器"""
+    """每个 provider 实例一个熔断器
 
-    def __init__(self, failure_threshold: int = 5, recovery_timeout: int = 30, half_open_max: int = 1):
+    Recovery timeout is capped at max 5 seconds for faster recovery.
+    """
+
+    # Maximum recovery timeout (seconds) - capped for faster recovery
+    MAX_RECOVERY_TIMEOUT = 5
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        recovery_timeout: int = 5,  # Default 5s, max 5s
+        half_open_max: int = 1
+    ):
+        # Cap recovery timeout to max 5 seconds
+        self.recovery_timeout = min(recovery_timeout, self.MAX_RECOVERY_TIMEOUT)
         self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
         self.half_open_max = half_open_max
         self.state = CircuitState.CLOSED
         self.failure_count = 0

@@ -363,13 +363,25 @@ async def test_model(name: str, request: Request):
                 if hit_index == -1:
                     hit_index = i
             else:
+                # Include full error details for debugging
+                error_info = {
+                    "message": result.error or "Unknown error",
+                    "status_code": result.status_code,
+                }
+                # Add error_detail if available (structured error info)
+                if result.error_detail:
+                    error_info["detail"] = result.error_detail
+                # Add request_id for tracing
+                if result.request_id:
+                    error_info["request_id"] = result.request_id
+
                 chain_results.append({
                     "adapter": ref.adapter,
                     "model_name": ref.model_name,
                     "priority": ref.priority,
                     "success": False,
                     "latency_ms": round(latency, 0),
-                    "error": result.error,
+                    "error": error_info,
                     "status_code": result.status_code,
                 })
         except Exception as e:
