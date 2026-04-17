@@ -10,6 +10,80 @@ from pathlib import Path
 _conv_logger = logging.getLogger("modelswitch.conversations")
 
 
+class StreamAccumulator:
+    """Accumulate streaming output for tracking/logging.
+
+    Collects text content and tool calls from OpenAI stream chunks,
+    providing a summary suitable for conversation logging.
+    """
+
+    def __init__(self):
+        self.collected_text: list[str] = []
+        self.collected_tool_calls: dict[int, dict] = {}  # index -> {"name", "arguments"}
+
+    def process_chunk(self, chunk_data) -> None:
+        """Process a chunk and accumulate its content.
+
+        Args:
+            chunk_data: OpenAI chunk dict or object with .model_dump() method
+        """
+        if chunk_data is None:
+            return
+        # Convert to dict if needed
+        if hasattr(chunk_data, "model_dump"):
+            chunk_data = chunk_data.model_dump(exclude_none=True)
+        elif hasattr(chunk_data, "to_dict"):
+            chunk_data = chunk_data.to_dict()
+        if not isinstance(chunk_data, dict):
+            return
+
+        choices = chunk_data.get("choices", [])
+        if not choices:
+            return
+        delta = choices[0].get("delta", {})
+        if not isinstance(delta, dict):
+            return
+
+        # Accumulate text content
+        if delta.get("content"):
+            self.collected_text.append(delta["content"])
+        elif delta.get("reasoning_content"):
+            self.collected_text.append(delta["reasoning_content"])
+
+        # Accumulate tool calls
+        for tc in delta.get("tool_calls", []):
+            idx = tc.get("index", 0)
+            func = tc.get("function", {})
+            if idx not in self.collected_tool_calls:
+                self.collected_tool_calls[idx] = {
+                    "name": func.get("name", ""),
+                    "arguments": func.get("arguments", ""),
+                }
+            else:
+                if func.get("name"):
+                    self.collected_tool_calls[idx]["name"] = func["name"]
+                if func.get("arguments"):
+                    self.collected_tool_calls[idx]["arguments"] += func["arguments"]
+
+    def get_output_summary(self) -> list[dict] | None:
+        """Build output summary for tracking.
+
+        Returns:
+            List of content parts (text + tool_use), or None if empty
+        """
+        parts = []
+        if self.collected_text:
+            parts.append({"type": "text", "text": "".join(self.collected_text)})
+        for idx in sorted(self.collected_tool_calls):
+            tc = self.collected_tool_calls[idx]
+            parts.append({
+                "type": "tool_use",
+                "name": tc["name"],
+                "arguments": tc["arguments"],
+            })
+        return parts if parts else None
+
+
 def _extract_usage(result):
     """从 AdapterResponse 中提取 token 用量"""
     tokens_in = 0

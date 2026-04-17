@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from enum import Enum
 from typing import Dict
@@ -25,49 +26,54 @@ class CircuitBreaker:
         self.failure_count = 0
         self.last_failure_time = 0.0
         self.half_open_count = 0
+        self._lock = threading.Lock()  # Thread safety for state transitions
 
     def can_execute(self) -> bool:
-        if self.state == CircuitState.CLOSED:
-            return True
-        if self.state == CircuitState.OPEN:
-            if time.monotonic() - self.last_failure_time >= self.recovery_timeout:
-                self.state = CircuitState.HALF_OPEN
-                self.half_open_count = 0
-                logger.info(f"熔断器进入半开状态，允许探测")
+        with self._lock:
+            if self.state == CircuitState.CLOSED:
                 return True
+            if self.state == CircuitState.OPEN:
+                if time.monotonic() - self.last_failure_time >= self.recovery_timeout:
+                    self.state = CircuitState.HALF_OPEN
+                    self.half_open_count = 0
+                    logger.info(f"熔断器进入半开状态，允许探测")
+                    return True
+                return False
+            if self.state == CircuitState.HALF_OPEN:
+                if self.half_open_count < self.half_open_max:
+                    self.half_open_count += 1
+                    return True
+                return False
             return False
-        if self.state == CircuitState.HALF_OPEN:
-            if self.half_open_count < self.half_open_max:
-                self.half_open_count += 1
-                return True
-            return False
-        return False
 
     def record_success(self) -> None:
-        if self.state == CircuitState.HALF_OPEN:
-            logger.info("熔断器半开探测成功，恢复为关闭状态")
-            self.state = CircuitState.CLOSED
-        self.failure_count = 0
+        with self._lock:
+            if self.state == CircuitState.HALF_OPEN:
+                logger.info("熔断器半开探测成功，恢复为关闭状态")
+                self.state = CircuitState.CLOSED
+            self.failure_count = 0
 
     def record_failure(self) -> None:
-        self.failure_count += 1
-        self.last_failure_time = time.monotonic()
-        if self.state == CircuitState.HALF_OPEN:
-            logger.info("熔断器半开探测失败，重新熔断")
-            self.state = CircuitState.OPEN
-        elif self.failure_count >= self.failure_threshold:
-            logger.warning(
-                f"熔断器触发：连续失败 {self.failure_count} 次，"
-                f"熔断 {self.recovery_timeout} 秒"
-            )
-            self.state = CircuitState.OPEN
+        with self._lock:
+            self.failure_count += 1
+            self.last_failure_time = time.monotonic()
+            if self.state == CircuitState.HALF_OPEN:
+                logger.info("熔断器半开探测失败，重新熔断")
+                self.state = CircuitState.OPEN
+            elif self.failure_count >= self.failure_threshold:
+                logger.warning(
+                    f"熔断器触发：连续失败 {self.failure_count} 次，"
+                    f"熔断 {self.recovery_timeout} 秒"
+                )
+                self.state = CircuitState.OPEN
 
     def reset(self) -> None:
         """重置熔断器"""
-        self.state = CircuitState.CLOSED
-        self.failure_count = 0
-        self.last_failure_time = 0.0
-        self.half_open_count = 0
+        with self._lock:
+            self.state = CircuitState.CLOSED
+            self.failure_count = 0
+            self.last_failure_time = 0.0
+            self.half_open_count = 0
 
     def get_state_value(self) -> int:
         """返回 Prometheus 使用的数值：0=closed, 1=half_open, 2=open"""

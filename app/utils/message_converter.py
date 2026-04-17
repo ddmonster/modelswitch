@@ -1,9 +1,64 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
 import re
 from typing import Any, AsyncGenerator
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Safe Parsing Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _safe_json_parse(json_str: str, default: Any, context: str = "") -> Any:
+    """Parse JSON string safely with logging on failure.
+
+    Args:
+        json_str: JSON string to parse
+        default: Default value if parsing fails
+        context: Context string for logging (e.g., "tool_call arguments")
+
+    Returns:
+        Parsed JSON object or default value
+    """
+    if not json_str:
+        return default
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        logger.warning(
+            f"JSON parse error in {context}: {e.msg} at position {e.pos}, "
+            f"input preview: {json_str[:100]}"
+        )
+        return default
+
+
+def _safe_get(obj: dict | Any, key: str, default: Any = None, required: bool = False) -> Any:
+    """Get value from dict safely with optional required field check.
+
+    Args:
+        obj: Object to get value from (can be dict or object with attributes)
+        key: Key to get
+        default: Default value if key missing
+        required: If True, log warning when key missing
+
+    Returns:
+        Value or default
+    """
+    if isinstance(obj, dict):
+        value = obj.get(key, default)
+    else:
+        value = getattr(obj, key, default)
+
+    if required and value == default:
+        logger.warning(f"Missing required field '{key}' in {type(obj).__name__}")
+
+    return value
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -139,191 +194,310 @@ def anthropic_to_openai_messages(data: dict) -> dict:
     messages = []
     model = data.get("model", "")
 
-    # Anthropic 的 system 是顶层字段
+    # System conversion
     system = data.get("system")
     if system:
-        if isinstance(system, str):
-            messages.append({"role": "system", "content": system})
-        elif isinstance(system, list):
-            # Join system blocks into single message, preserving cache_control if any
-            text_parts = []
-            has_cache_control = False
-            for block in system:
-                if block.get("type") == "text":
-                    text_parts.append(block.get("text", ""))
-                    if block.get("cache_control"):
-                        has_cache_control = True
-            if text_parts:
-                sys_msg = {"role": "system", "content": " ".join(text_parts)}
-                # Only preserve cache_control on the first system message
-                if has_cache_control:
-                    for block in system:
-                        if block.get("type") == "text" and block.get("cache_control"):
-                            sys_msg["cache_control"] = block["cache_control"]
-                            break
-                messages.append(sys_msg)
+        messages.extend(_convert_system_block(system))
 
-    # 转换 tools: Anthropic -> OpenAI (过滤 BatchTool，保留 cache_control)
-    openai_tools = None
-    if "tools" in data:
-        openai_tools = []
-        for tool in data["tools"]:
-            # Filter BatchTool (Anthropic internal type)
-            if tool.get("type") == "BatchTool":
-                continue
-            openai_tool = {
-                "type": "function",
-                "function": {
-                    "name": tool["name"],
-                    "description": tool.get("description", ""),
-                    "parameters": clean_json_schema(
-                        tool.get("input_schema", {})
-                    ),
-                },
-            }
-            # Preserve cache_control on tools
-            if tool.get("cache_control"):
-                openai_tool["cache_control"] = tool["cache_control"]
-            openai_tools.append(openai_tool)
-        if not openai_tools:
-            openai_tools = None
+    # Tools conversion
+    openai_tools = _convert_tools_block(data.get("tools"))
 
-    # 转换 tool_choice: Anthropic -> OpenAI
-    openai_tool_choice = None
-    if "tool_choice" in data:
-        tc = data["tool_choice"]
-        if isinstance(tc, dict):
-            tc_type = tc.get("type", "auto")
-            if tc_type == "auto":
-                openai_tool_choice = "auto"
-            elif tc_type == "any":
-                openai_tool_choice = "required"
-            elif tc_type == "none":
-                openai_tool_choice = "none"
-            elif tc_type == "tool":
-                openai_tool_choice = {
-                    "type": "function",
-                    "function": {"name": tc["name"]},
-                }
-        elif isinstance(tc, str):
-            openai_tool_choice = tc
+    # Tool_choice conversion
+    openai_tool_choice = _convert_tool_choice(data.get("tool_choice"))
 
-    # 转换 messages
+    # Messages conversion
     for msg in data.get("messages", []):
         role = msg.get("role", "user")
         content = msg.get("content", "")
 
         if role == "user":
-            if isinstance(content, str):
-                messages.append({"role": "user", "content": content})
-            elif isinstance(content, list):
-                # H2 fix: collect tool_results separately, append after user text
-                converted = []
-                tool_results = []
-                for block in content:
-                    if block.get("type") == "text":
-                        text_part = {"type": "text", "text": block.get("text", "")}
-                        # Preserve cache_control on text blocks
-                        if block.get("cache_control"):
-                            text_part["cache_control"] = block["cache_control"]
-                        converted.append(text_part)
-                    elif block.get("type") == "image":
-                        source = block.get("source", {})
-                        data_url = (
-                            f"data:{source.get('media_type', 'image/png')};base64,"
-                            f"{source.get('data', '')}"
-                        )
-                        converted.append(
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": data_url},
-                            }
-                        )
-                    elif block.get("type") == "tool_result":
-                        # tool_result -> OpenAI role: "tool" 消息
-                        result_content = block.get("content", "")
-                        if isinstance(result_content, list):
-                            result_content = " ".join(
-                                b.get("text", "")
-                                for b in result_content
-                                if b.get("type") == "text"
-                            )
-                        tool_results.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": block.get("tool_use_id", ""),
-                                "content": str(result_content)
-                                if result_content
-                                else "",
-                            }
-                        )
-                    # Note: thinking blocks in user messages are silently dropped
-                    # (OpenAI doesn't have an equivalent)
-                # H2 fix: user text first, then tool results
-                # Simplify: if only single text block (no images), use string content
-                # Some OpenAI-compatible providers (GLM/BigModel) don't support array content
-                if converted:
-                    if len(converted) == 1 and converted[0].get("type") == "text":
-                        # Single text block -> simplify to string
-                        text_content = converted[0].get("text", "")
-                        # Preserve cache_control if present
-                        user_msg = {"role": "user", "content": text_content}
-                        if converted[0].get("cache_control"):
-                            user_msg["cache_control"] = converted[0]["cache_control"]
-                        messages.append(user_msg)
-                    else:
-                        messages.append({"role": "user", "content": converted})
-                messages.extend(tool_results)
+            converted, tool_results = _convert_user_content(content)
+            messages.extend(converted)
+            messages.extend(tool_results)
         elif role == "assistant":
-            if isinstance(content, str):
-                messages.append({"role": "assistant", "content": content})
-            elif isinstance(content, list):
-                # Collect text and thinking parts
-                text_parts = []
-                thinking_parts = []
-                tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
-                has_cache_control = False
+            messages.append(_convert_assistant_content(content))
 
-                for block in content:
-                    if block.get("type") == "text":
-                        text_parts.append(block.get("text", ""))
-                        if block.get("cache_control"):
-                            has_cache_control = True
-                    elif block.get("type") == "thinking":
-                        # Merge thinking into text for history preservation (OpenAI doesn't support thinking blocks)
-                        thinking_parts.append(block.get("thinking", ""))
-                        if block.get("cache_control"):
-                            has_cache_control = True
+    return _build_openai_request_dict(data, model, messages, openai_tools, openai_tool_choice)
 
-                # Combine thinking and text parts
-                all_text_parts = thinking_parts + text_parts
-                combined_text = " ".join(all_text_parts) if all_text_parts else None
 
-                if tool_use_blocks:
-                    tool_calls = []
-                    for b in tool_use_blocks:
-                        tool_calls.append(
-                            {
-                                "id": b.get("id", ""),
-                                "type": "function",
-                                "function": {
-                                    "name": b.get("name", ""),
-                                    "arguments": json.dumps(
-                                        b.get("input", {}), ensure_ascii=False
-                                    ),
-                                },
-                            }
-                        )
-                    # Build assistant message with content and tool_calls
-                    msg = {"role": "assistant", "tool_calls": tool_calls}
-                    if combined_text:
-                        msg["content"] = combined_text
-                    else:
-                        msg["content"] = None
-                    messages.append(msg)
-                elif combined_text:
-                    messages.append({"role": "assistant", "content": combined_text})
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper functions for anthropic_to_openai_messages decomposition
+# ─────────────────────────────────────────────────────────────────────────────
 
+
+def _convert_system_block(system: str | list) -> list[dict]:
+    """Convert Anthropic system field to OpenAI system message(s).
+
+    Args:
+        system: Anthropic system field (string or list of blocks)
+
+    Returns:
+        List of OpenAI system messages
+    """
+    messages = []
+    if isinstance(system, str):
+        messages.append({"role": "system", "content": system})
+    elif isinstance(system, list):
+        # Join system blocks into single message, preserving cache_control if any
+        text_parts = []
+        has_cache_control = False
+        for block in system:
+            if block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+                if block.get("cache_control"):
+                    has_cache_control = True
+        if text_parts:
+            sys_msg = {"role": "system", "content": " ".join(text_parts)}
+            # Only preserve cache_control on the first system message
+            if has_cache_control:
+                for block in system:
+                    if block.get("type") == "text" and block.get("cache_control"):
+                        sys_msg["cache_control"] = block["cache_control"]
+                        break
+            messages.append(sys_msg)
+    return messages
+
+
+def _convert_tools_block(tools: list) -> list[dict] | None:
+    """Convert Anthropic tools to OpenAI function format.
+
+    Filters BatchTool (Anthropic internal tool type) and preserves cache_control.
+
+    Args:
+        tools: Anthropic tools list
+
+    Returns:
+        OpenAI tools list or None if empty
+    """
+    if not tools:
+        return None
+
+    openai_tools = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            logger.warning(f"Invalid tool type: {type(tool).__name__}, expected dict")
+            continue
+
+        # Filter BatchTool (Anthropic internal type)
+        if tool.get("type") == "BatchTool":
+            continue
+
+        # Validate required 'name' field
+        tool_name = tool.get("name")
+        if not tool_name:
+            logger.warning(f"Tool missing required 'name' field, skipping")
+            continue
+
+        openai_tool = {
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "description": tool.get("description", ""),
+                "parameters": clean_json_schema(tool.get("input_schema", {})),
+            },
+        }
+        # Preserve cache_control on tools
+        if tool.get("cache_control"):
+            openai_tool["cache_control"] = tool["cache_control"]
+        openai_tools.append(openai_tool)
+
+    return openai_tools if openai_tools else None
+
+
+def _convert_tool_choice(tool_choice: dict | str) -> dict | str | None:
+    """Convert Anthropic tool_choice to OpenAI format.
+
+    Args:
+        tool_choice: Anthropic tool_choice field
+
+    Returns:
+        OpenAI tool_choice value or None
+    """
+    if not tool_choice:
+        return None
+
+    if isinstance(tool_choice, dict):
+        tc_type = tool_choice.get("type", "auto")
+        if tc_type == "auto":
+            return "auto"
+        elif tc_type == "any":
+            return "required"
+        elif tc_type == "none":
+            return "none"
+        elif tc_type == "tool":
+            tc_name = tool_choice.get("name")
+            if not tc_name:
+                logger.warning("tool_choice type='tool' missing required 'name' field, falling back to auto")
+                return "auto"
+            return {
+                "type": "function",
+                "function": {"name": tc_name},
+            }
+        else:
+            logger.warning(f"Unknown tool_choice type: '{tc_type}', defaulting to auto")
+            return "auto"
+    elif isinstance(tool_choice, str):
+        return tool_choice
+
+    return None
+
+
+def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
+    """Convert Anthropic user message content.
+
+    Args:
+        content: User message content (string or list of blocks)
+
+    Returns:
+        Tuple of (converted_messages, tool_result_messages)
+    """
+    converted = []
+    tool_results = []
+
+    if isinstance(content, str):
+        converted.append({"role": "user", "content": content})
+    elif isinstance(content, list):
+        for block in content:
+            if block.get("type") == "text":
+                text_part = {"type": "text", "text": block.get("text", "")}
+                # Preserve cache_control on text blocks
+                if block.get("cache_control"):
+                    text_part["cache_control"] = block["cache_control"]
+                converted.append(text_part)
+            elif block.get("type") == "image":
+                source = block.get("source", {})
+                if not isinstance(source, dict):
+                    logger.warning("image block 'source' is not a dict, skipping")
+                    continue
+                media_type = source.get("media_type", "image/png")
+                image_data = source.get("data", "")
+                if not image_data:
+                    logger.warning("image block missing 'data' field, skipping")
+                    continue
+                data_url = f"data:{media_type};base64,{image_data}"
+                converted.append({"type": "image_url", "image_url": {"url": data_url}})
+            elif block.get("type") == "tool_result":
+                # tool_result -> OpenAI role: "tool" 消息
+                tool_use_id = block.get("tool_use_id")
+                if not tool_use_id:
+                    logger.warning("tool_result block missing required 'tool_use_id' field, using placeholder")
+                    tool_use_id = "unknown_tool"
+
+                result_content = block.get("content", "")
+                if isinstance(result_content, list):
+                    result_content = " ".join(
+                        b.get("text", "") for b in result_content if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tool_use_id,
+                    "content": str(result_content) if result_content else "",
+                })
+
+        # Simplify: if only single text block (no images), use string content
+        # Some OpenAI-compatible providers (GLM/BigModel) don't support array content
+        if converted:
+            if len(converted) == 1 and converted[0].get("type") == "text":
+                text_content = converted[0].get("text", "")
+                user_msg = {"role": "user", "content": text_content}
+                if converted[0].get("cache_control"):
+                    user_msg["cache_control"] = converted[0]["cache_control"]
+                converted = [user_msg]
+            else:
+                converted = [{"role": "user", "content": converted}]
+
+    return converted, tool_results
+
+
+def _convert_assistant_content(content: str | list) -> dict:
+    """Convert Anthropic assistant message content.
+
+    Args:
+        content: Assistant message content (string or list of blocks)
+
+    Returns:
+        OpenAI assistant message dict
+    """
+    if isinstance(content, str):
+        return {"role": "assistant", "content": content}
+
+    if not isinstance(content, list):
+        return {"role": "assistant", "content": content or ""}
+
+    # Collect text and thinking parts
+    text_parts = []
+    thinking_parts = []
+    tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+    has_cache_control = False
+
+    for block in content:
+        if block.get("type") == "text":
+            text_parts.append(block.get("text", ""))
+            if block.get("cache_control"):
+                has_cache_control = True
+        elif block.get("type") == "thinking":
+            # Merge thinking into text for history preservation
+            thinking_parts.append(block.get("thinking", ""))
+            if block.get("cache_control"):
+                has_cache_control = True
+
+    # Combine thinking and text parts
+    all_text_parts = thinking_parts + text_parts
+    combined_text = " ".join(all_text_parts) if all_text_parts else None
+
+    if tool_use_blocks:
+        tool_calls = []
+        for b in tool_use_blocks:
+            if not isinstance(b, dict):
+                logger.warning(f"Invalid tool_use block type: {type(b).__name__}, expected dict")
+                continue
+
+            tool_id = b.get("id")
+            if not tool_id:
+                tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                logger.debug(f"tool_use block missing 'id', generated: {tool_id}")
+
+            tool_name = b.get("name", "")
+            tool_input = b.get("input", {})
+
+            tool_calls.append({
+                "id": tool_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(tool_input, ensure_ascii=False),
+                },
+            })
+
+        if tool_calls:
+            msg = {"role": "assistant", "tool_calls": tool_calls}
+            msg["content"] = combined_text if combined_text else None
+            return msg
+    elif combined_text:
+        return {"role": "assistant", "content": combined_text}
+
+    return {"role": "assistant", "content": ""}
+
+
+def _build_openai_request_dict(
+    data: dict,
+    model: str,
+    messages: list,
+    openai_tools: list | None,
+    openai_tool_choice: dict | str | None,
+) -> dict:
+    """Build final OpenAI request dict from converted components.
+
+    Args:
+        data: Original Anthropic request body
+        model: Model name
+        messages: Converted messages
+        openai_tools: Converted tools
+        openai_tool_choice: Converted tool_choice
+
+    Returns:
+        OpenAI request dict
+    """
     result = {
         "model": model,
         "messages": messages,
@@ -345,8 +519,6 @@ def anthropic_to_openai_messages(data: dict) -> dict:
             result["max_tokens"] = max_tokens
 
     # Map Anthropic thinking → OpenAI reasoning_effort
-    # For supported models: use sophisticated resolution
-    # For other models: use simple fallback (backward compatible)
     if supports_reasoning_effort(model):
         effort = resolve_reasoning_effort(data)
         if effort:
@@ -437,10 +609,12 @@ def convert_openai_to_anthropic_response(
             has_tool_use = True
             for tc in tool_calls:
                 tc_func = tc.get("function", {})
-                try:
-                    tc_input = json.loads(tc_func.get("arguments", "{}"))
-                except (json.JSONDecodeError, TypeError):
-                    tc_input = {}
+                tc_args = tc_func.get("arguments", "{}")
+                tc_input = _safe_json_parse(
+                    tc_args,
+                    default={},
+                    context="tool_call arguments"
+                )
                 content.append(
                     {
                         "type": "tool_use",
@@ -458,13 +632,11 @@ def convert_openai_to_anthropic_response(
                 fc_args = function_call.get("arguments")
                 fc_id = function_call.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
                 if fc_name or fc_args:
-                    try:
-                        if isinstance(fc_args, str):
-                            fc_input = json.loads(fc_args)
-                        else:
-                            fc_input = fc_args or {}
-                    except (json.JSONDecodeError, TypeError):
-                        fc_input = {}
+                    fc_input = _safe_json_parse(
+                        fc_args if isinstance(fc_args, str) else "{}",
+                        default={},
+                        context="function_call arguments"
+                    )
                     content.append(
                         {
                             "type": "tool_use",
@@ -786,10 +958,18 @@ async def openai_stream_to_anthropic(
                 if usage.get("completion_tokens"):
                     total_output_tokens = usage.get("completion_tokens", total_output_tokens)
 
+    except asyncio.CancelledError:
+        # Client disconnected - propagate cancellation without sending error event
+        logger.debug(f"[{request_id}] Anthropic stream conversion cancelled by client")
+        raise
     except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).error(f"openai_stream_to_anthropic error: {e}")
+        logger.error(
+            f"[{request_id}] openai_stream_to_anthropic error: "
+            f"{type(e).__name__}: {str(e)[:200]}"
+        )
+        # Don't try to send error SSE - client may have disconnected
+        # Just re-raise so upstream can handle
+        raise
     finally:
         # 关闭仍打开的块
         close_ev = _close_open_block()

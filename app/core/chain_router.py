@@ -7,12 +7,38 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from app.adapters.base import AdapterResponse, BaseAdapter
 from app.adapters.litellm_adapter import create_adapter
 from app.core.circuit_breaker import CircuitBreaker
+from app.core.exceptions import (
+    ModelNotFoundError,
+    NoAdapterAvailableError,
+    AllAdaptersFailedError,
+    CircuitBreakerOpenError,
+)
 from app.models.config_models import GatewayConfig, ModelAdapterRef, ModelConfig, ProviderConfig
 
 logger = logging.getLogger(__name__)
 
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404}
+
+
+def _make_error_response(
+    status_code: int,
+    error: str,
+    request_id: str,
+    error_type: str = "",
+    adapter_name: str = "",
+    model_name: str = "",
+) -> AdapterResponse:
+    """Create a standardized error AdapterResponse with request context."""
+    return AdapterResponse(
+        status_code=status_code,
+        success=False,
+        error=error,
+        adapter_name=adapter_name,
+        model_name=model_name,
+        request_id=request_id,
+        error_detail={"type": error_type, "message": error},
+    )
 
 
 class ChainRouter:
@@ -86,15 +112,21 @@ class ChainRouter:
         """
         model_config = self._resolve_model(model)
         if not model_config:
-            return AdapterResponse(
-                status_code=404, success=False,
-                error=f"Model '{model}' not found"
+            return _make_error_response(
+                status_code=404,
+                error=f"Model '{model}' not found",
+                request_id=request_id,
+                error_type="model_not_found",
+                model_name=model,
             )
 
         if not model_config.adapters:
-            return AdapterResponse(
-                status_code=503, success=False,
-                error=f"No adapters configured for model '{model}'"
+            return _make_error_response(
+                status_code=503,
+                error=f"No adapters configured for model '{model}'",
+                request_id=request_id,
+                error_type="no_adapter",
+                model_name=model,
             )
 
         logger.debug(
@@ -135,21 +167,33 @@ class ChainRouter:
         provider = self._providers.get(ref.adapter)
 
         if not provider:
-            return AdapterResponse(
-                status_code=503, success=False,
-                error=f"Provider '{ref.adapter}' not found"
+            return _make_error_response(
+                status_code=503,
+                error=f"Provider '{ref.adapter}' not found",
+                request_id=request_id,
+                error_type="provider_not_found",
+                adapter_name=ref.adapter,
+                model_name=model,
             )
         if not provider.enabled:
-            return AdapterResponse(
-                status_code=503, success=False,
-                error=f"Provider '{ref.adapter}' is disabled"
+            return _make_error_response(
+                status_code=503,
+                error=f"Provider '{ref.adapter}' is disabled",
+                request_id=request_id,
+                error_type="provider_disabled",
+                adapter_name=ref.adapter,
+                model_name=model,
             )
 
         cb = self._circuit_breakers.get(ref.adapter)
         if cb and not cb.can_execute():
-            return AdapterResponse(
-                status_code=503, success=False,
-                error=f"Provider '{ref.adapter}' circuit breaker is open"
+            return _make_error_response(
+                status_code=503,
+                error=f"Provider '{ref.adapter}' circuit breaker is open",
+                request_id=request_id,
+                error_type="circuit_breaker_open",
+                adapter_name=ref.adapter,
+                model_name=model,
             )
 
         adapter = self._adapters[ref.adapter]
@@ -240,9 +284,12 @@ class ChainRouter:
                     )
 
         logger.error(f"[{request_id}] chain_failed model={model} all_adapters_exhausted")
-        return AdapterResponse(
-            status_code=502, success=False,
-            error=f"All adapters failed. Last error: {last_error}"
+        return _make_error_response(
+            status_code=502,
+            error=f"All adapters failed. Last error: {last_error}",
+            request_id=request_id,
+            error_type="all_adapters_failed",
+            model_name=model,
         )
 
     async def _execute_chat_stream(

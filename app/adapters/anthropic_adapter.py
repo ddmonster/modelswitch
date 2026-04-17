@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from typing import Any
 
-from openai import APIStatusError, APITimeoutError
+from anthropic import APIStatusError as AnthropicAPIStatusError
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
+from openai import APIStatusError, APITimeoutError, APIConnectionError
 
-from app.adapters.base import AdapterResponse, BaseAdapter
+from app.adapters.base import AdapterResponse, BaseAdapter, create_error_response
 from app.models.config_models import ProviderConfig
+from app.utils.logging import get_adapter_logger
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +39,6 @@ class AnthropicAdapter(BaseAdapter):
         request_id: str = "",
         **kwargs: Any,
     ) -> AdapterResponse:
-        from anthropic import APIStatusError as AStatus
-        from anthropic import APITimeoutError as ATimeout
-
         start = time.monotonic()
 
         logger.debug(
@@ -45,58 +47,41 @@ class AnthropicAdapter(BaseAdapter):
             f"stream={stream} timeout={timeout}"
         )
 
+        adapter_logger = get_adapter_logger(self.name, request_id)
+
+        # Log request details
+        adapter_logger.log_request(
+            model=model_name,
+            stream=stream,
+            timeout=timeout,
+            messages_count=len(messages),
+            params=kwargs,
+        )
+
         try:
-            # 将 OpenAI 格式消息转换为 Anthropic 格式
-            system, anth_messages = _openai_to_anthropic_messages(messages)
+            create_kwargs = self._prepare_create_kwargs(messages, model_name, timeout, **kwargs)
 
-            create_kwargs: dict[str, Any] = {
-                "model": model_name,
-                "messages": anth_messages,
-                "max_tokens": kwargs.get("max_tokens", 4096),
-                "timeout": timeout,
-            }
-            if system:
-                create_kwargs["system"] = system
-            for p in ("temperature", "top_p", "top_k"):
-                if p in kwargs:
-                    create_kwargs[p] = kwargs[p]
-            if "stop" in kwargs:
-                create_kwargs["stop_sequences"] = kwargs["stop"]
-
-            # 转换 tools
-            if "tools" in kwargs:
-                create_kwargs["tools"] = [
-                    {
-                        "name": t.get("function", {}).get("name", ""),
-                        "description": t.get("function", {}).get("description", ""),
-                        "input_schema": t.get("function", {}).get("parameters", {}),
-                    }
-                    for t in kwargs["tools"]
-                ]
-
-            # 转换 tool_choice
-            if "tool_choice" in kwargs:
-                tc = kwargs["tool_choice"]
-                if tc == "auto":
-                    create_kwargs["tool_choice"] = {"type": "auto"}
-                elif tc == "required":
-                    create_kwargs["tool_choice"] = {"type": "any"}
-                elif isinstance(tc, dict):
-                    name = tc.get("function", {}).get("name", "")
-                    create_kwargs["tool_choice"] = {"type": "tool", "name": name}
+            adapter_logger.debug(
+                f"api_call_start",
+                model=model_name,
+                stream=stream,
+                kwargs_keys=list(create_kwargs.keys()),
+            )
 
             try:
                 if stream:
                     return await self._stream(
-                        create_kwargs, model_name, start, request_id
+                        create_kwargs, model_name, start, request_id, adapter_logger
                     )
                 else:
                     return await self._non_stream(
-                        create_kwargs, model_name, start, request_id
+                        create_kwargs, model_name, start, request_id, adapter_logger
                     )
-            except ATimeout as e:
+            except AnthropicAPITimeoutError as e:
                 raise APITimeoutError(str(e))
-            except AStatus as e:
+            except AnthropicAPIConnectionError as e:
+                raise APIConnectionError(str(e))
+            except AnthropicAPIStatusError as e:
                 raise APIStatusError(
                     str(e),
                     response=e.response,
@@ -105,45 +90,116 @@ class AnthropicAdapter(BaseAdapter):
 
         except APITimeoutError as e:
             latency = (time.monotonic() - start) * 1000
-            logger.warning(
-                f"[{request_id}] api_timeout provider={self.name} latency={latency:.0f}ms"
-            )
-            return AdapterResponse(
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="timeout",
+                error_message=str(e),
+                latency_ms=latency,
                 status_code=504,
-                success=False,
-                adapter_name=self.name,
-                model_name=model_name,
-                latency_ms=latency,
-                error=str(e),
             )
-        except APIStatusError as e:
-            latency = (time.monotonic() - start) * 1000
-            logger.warning(
-                f"[{request_id}] api_error provider={self.name} "
-                f"status={e.status_code} error={e}"
-            )
-            return AdapterResponse(
-                status_code=e.status_code,
-                success=False,
-                adapter_name=self.name,
-                model_name=model_name,
-                latency_ms=latency,
-                error=str(e),
-            )
-        except Exception as e:
-            latency = (time.monotonic() - start) * 1000
-            logger.error(f"[{request_id}] api_exception provider={self.name} error={e}")
-            return AdapterResponse(
-                status_code=502,
-                success=False,
-                adapter_name=self.name,
-                model_name=model_name,
-                latency_ms=latency,
-                error=str(e),
+            return create_error_response(
+                self.name, model_name, latency, 504, str(e), request_id
             )
 
+        except APIConnectionError as e:
+            latency = (time.monotonic() - start) * 1000
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="connection",
+                error_message=str(e),
+                latency_ms=latency,
+                status_code=503,
+            )
+            return create_error_response(
+                self.name, model_name, latency, 503, str(e), request_id
+            )
+
+        except APIStatusError as e:
+            latency = (time.monotonic() - start) * 1000
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="api_status",
+                error_message=str(e),
+                latency_ms=latency,
+                status_code=e.status_code,
+                upstream_response=str(e.response) if e.response else "",
+            )
+            return create_error_response(
+                self.name, model_name, latency, e.status_code, str(e), request_id
+            )
+
+        except Exception as e:
+            latency = (time.monotonic() - start) * 1000
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="unexpected",
+                error_message=f"{type(e).__name__}: {str(e)}",
+                latency_ms=latency,
+                status_code=502,
+            )
+            logger.exception(f"[{request_id}] Unexpected error in Anthropic adapter")
+            return create_error_response(
+                self.name, model_name, latency, 502, str(e), request_id
+            )
+
+    def _prepare_create_kwargs(
+        self,
+        messages: list,
+        model_name: str,
+        timeout: int,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build kwargs for Anthropic messages.create()."""
+        # Convert OpenAI format messages to Anthropic format
+        system, anth_messages = _openai_to_anthropic_messages(messages)
+
+        create_kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": anth_messages,
+            "max_tokens": kwargs.get("max_tokens", 4096),
+            "timeout": timeout,
+        }
+        if system:
+            create_kwargs["system"] = system
+
+        # Standard parameters
+        for p in ("temperature", "top_p", "top_k"):
+            if p in kwargs:
+                create_kwargs[p] = kwargs[p]
+        if "stop" in kwargs:
+            create_kwargs["stop_sequences"] = kwargs["stop"]
+
+        # Convert tools
+        if "tools" in kwargs:
+            create_kwargs["tools"] = [
+                {
+                    "name": t.get("function", {}).get("name", ""),
+                    "description": t.get("function", {}).get("description", ""),
+                    "input_schema": t.get("function", {}).get("parameters", {}),
+                }
+                for t in kwargs["tools"]
+            ]
+
+        # Convert tool_choice
+        if "tool_choice" in kwargs:
+            tc = kwargs["tool_choice"]
+            if tc == "auto":
+                create_kwargs["tool_choice"] = {"type": "auto"}
+            elif tc == "required":
+                create_kwargs["tool_choice"] = {"type": "any"}
+            elif isinstance(tc, dict):
+                name = tc.get("function", {}).get("name", "")
+                create_kwargs["tool_choice"] = {"type": "tool", "name": name}
+
+        return create_kwargs
+
     async def _non_stream(
-        self, create_kwargs: dict, model_name: str, start: float, request_id: str
+        self,
+        create_kwargs: dict,
+        model_name: str,
+        start: float,
+        request_id: str,
+        adapter_logger: Any,
     ) -> AdapterResponse:
         response = await self._client.messages.create(**create_kwargs)
         latency = (time.monotonic() - start) * 1000
@@ -154,9 +210,28 @@ class AnthropicAdapter(BaseAdapter):
             "completion_tokens": response.usage.output_tokens,
         }
 
-        logger.debug(
-            f"[{request_id}] api_response provider={self.name} "
-            f"status=200 latency={latency:.0f}ms usage={usage}"
+        # Log successful response
+        adapter_logger.log_response_start(
+            model=model_name,
+            latency_ms=latency,
+            status_code=200,
+            usage=usage,
+        )
+
+        # Log response structure at debug level
+        content_preview = ""
+        tool_calls_count = 0
+        for block in response.content:
+            if block.type == "text":
+                content_preview = block.text[:100] if block.text else ""
+            elif block.type == "tool_use":
+                tool_calls_count += 1
+
+        adapter_logger.debug(
+            f"response_structure",
+            content_preview=content_preview,
+            tool_calls=tool_calls_count,
+            finish_reason=response.stop_reason,
         )
 
         return AdapterResponse(
@@ -170,15 +245,20 @@ class AnthropicAdapter(BaseAdapter):
         )
 
     async def _stream(
-        self, create_kwargs: dict, model_name: str, start: float, request_id: str
+        self,
+        create_kwargs: dict,
+        model_name: str,
+        start: float,
+        request_id: str,
+        adapter_logger: Any,
     ) -> AdapterResponse:
         raw_stream = await self._client.messages.create(stream=True, **create_kwargs)
         resp_ref = None  # 用于在闭包中引用 AdapterResponse
 
         async def stream_generator():
             tool_call_index = -1
+            chunk_count = 0
             try:
-                chunk_count = 0
                 async for event in raw_stream:
                     # 从 Anthropic 流式事件中捕获 usage
                     if event.type == "message_start" and hasattr(event, "message"):
@@ -206,17 +286,39 @@ class AnthropicAdapter(BaseAdapter):
                             tool_call_index = chunk.pop("_tc_index_bump")
                         chunk_count += 1
                         yield chunk
+
                 elapsed = (time.monotonic() - start) * 1000
-                logger.debug(
-                    f"[{request_id}] stream_complete provider={self.name} "
-                    f"chunks={chunk_count} elapsed={elapsed:.0f}ms"
+
+                # Log stream completion
+                adapter_logger.log_stream_complete(
+                    model=model_name,
+                    total_chunks=chunk_count,
+                    latency_ms=elapsed,
+                    usage=resp_ref.usage if resp_ref else None,
                 )
+
+            except asyncio.CancelledError:
+                # Client disconnected - clean up and propagate cancellation
+                elapsed = (time.monotonic() - start) * 1000
+                adapter_logger.debug(
+                    f"stream_cancelled",
+                    model=model_name,
+                    chunks=chunk_count,
+                    latency_ms=f"{elapsed:.0f}",
+                )
+                logger.debug(f"[{request_id}] Stream cancelled by client")
+                raise  # Must re-raise CancelledError
+
             except Exception as e:
                 elapsed = (time.monotonic() - start) * 1000
-                logger.error(
-                    f"[{request_id}] stream_error provider={self.name} "
-                    f"error={e} elapsed={elapsed:.0f}ms"
+                adapter_logger.log_error(
+                    model=model_name,
+                    error_type="stream",
+                    error_message=f"{type(e).__name__}: {str(e)}",
+                    latency_ms=elapsed,
+                    status_code=502,
                 )
+                logger.exception(f"[{request_id}] Stream error in Anthropic adapter")
                 raise
 
         latency = (time.monotonic() - start) * 1000

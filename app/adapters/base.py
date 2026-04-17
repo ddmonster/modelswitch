@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -24,7 +25,50 @@ class AdapterResponse:
     success: bool = True
     error: Optional[str] = None
     usage: Optional[Dict[str, int]] = None   # {"prompt_tokens": x, "completion_tokens": y}
+    request_id: str = ""                     # Request ID for tracking
+    error_detail: Optional[Dict[str, Any]] = None  # Structured error info: {"type": "...", "message": "..."}
     _stream_adapter_info: Optional[Dict[str, Any]] = None  # chain 模式流式回传 adapter 信息
+
+
+def create_error_response(
+    adapter_name: str,
+    model_name: str,
+    latency_ms: float,
+    status_code: int,
+    error: str,
+    request_id: str = "",
+    error_type: str = "adapter_error",
+) -> AdapterResponse:
+    """Create standardized error AdapterResponse.
+
+    Args:
+        adapter_name: Provider name
+        model_name: Model being called
+        latency_ms: Request latency in milliseconds
+        status_code: HTTP status code for the error
+        error: Error message string
+        request_id: Request ID for tracking
+        error_type: Error category for programmatic handling
+
+    Returns:
+        AdapterResponse with error details
+    """
+    log_level = logging.WARNING if status_code < 500 else logging.ERROR
+    logger.log(
+        log_level,
+        f"[{request_id}] api_error provider={adapter_name} "
+        f"status={status_code} error={error}"
+    )
+    return AdapterResponse(
+        status_code=status_code,
+        success=False,
+        adapter_name=adapter_name,
+        model_name=model_name,
+        latency_ms=latency_ms,
+        error=error,
+        request_id=request_id,
+        error_detail={"type": error_type, "message": error},
+    )
 
 
 class BaseAdapter(ABC):

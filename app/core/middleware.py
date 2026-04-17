@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import threading
 import time
-from collections import defaultdict
 from typing import Dict, Optional
 
 from fastapi import Request, Response
@@ -16,51 +16,88 @@ class RateLimiter:
     """按 API Key 的双维度令牌桶限流器"""
 
     def __init__(self):
+        self._lock = threading.Lock()  # Thread safety for bucket operations
+        self._last_cleanup = time.monotonic()
+        self._cleanup_interval = 3600  # Cleanup every hour
         # 每分钟限流：{api_key: [token_count, last_reset_time]}
-        self._minute_buckets: Dict[str, list] = defaultdict(lambda: [0, time.monotonic()])
+        self._minute_buckets: Dict[str, list] = {}
         # 每日限流：{api_key: [token_count, date_str]}
-        self._daily_buckets: Dict[str, list] = defaultdict(lambda: [0, self._today()])
+        self._daily_buckets: Dict[str, list] = {}
 
     @staticmethod
     def _today() -> str:
         from datetime import date
         return date.today().isoformat()
 
+    def _maybe_cleanup(self) -> None:
+        """Remove stale entries to prevent unbounded memory growth."""
+        now = time.monotonic()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+
+        # Remove minute buckets older than 2 hours
+        stale_minute = [
+            k for k, v in self._minute_buckets.items()
+            if now - v[1] > 7200
+        ]
+        for k in stale_minute:
+            del self._minute_buckets[k]
+
+        # Remove daily buckets from previous days
+        today = self._today()
+        stale_daily = [
+            k for k, v in self._daily_buckets.items()
+            if v[1] != today
+        ]
+        for k in stale_daily:
+            del self._daily_buckets[k]
+
+        self._last_cleanup = now
+
     def check(self, api_key: str, rate_limit: int, daily_limit: int) -> Optional[float]:
         """
         检查是否允许请求。
         返回 None 表示允许，返回 float 表示需要等待的秒数（被限流）。
         """
-        now = time.monotonic()
-        today = self._today()
+        with self._lock:
+            self._maybe_cleanup()
+            now = time.monotonic()
+            today = self._today()
 
-        # 检查每分钟限流
-        if rate_limit > 0:
-            bucket = self._minute_buckets[api_key]
-            if now - bucket[1] >= 60:
-                bucket[0] = 0
-                bucket[1] = now
-            if bucket[0] >= rate_limit:
-                retry_after = 60 - (now - bucket[1])
-                return max(retry_after, 0.5)
-            bucket[0] += 1
+            # 检查每分钟限流
+            if rate_limit > 0:
+                bucket = self._minute_buckets.get(api_key)
+                if bucket is None:
+                    bucket = [0, now]
+                    self._minute_buckets[api_key] = bucket
+                if now - bucket[1] >= 60:
+                    bucket[0] = 0
+                    bucket[1] = now
+                if bucket[0] >= rate_limit:
+                    retry_after = 60 - (now - bucket[1])
+                    return max(retry_after, 0.5)
+                bucket[0] += 1
 
-        # 检查每日限流
-        if daily_limit > 0:
-            bucket = self._daily_buckets[api_key]
-            if bucket[1] != today:
-                bucket[0] = 0
-                bucket[1] = today
-            if bucket[0] >= daily_limit:
-                return 3600.0  # 等待 1 小时
-            bucket[0] += 1
+            # 检查每日限流
+            if daily_limit > 0:
+                bucket = self._daily_buckets.get(api_key)
+                if bucket is None:
+                    bucket = [0, today]
+                    self._daily_buckets[api_key] = bucket
+                if bucket[1] != today:
+                    bucket[0] = 0
+                    bucket[1] = today
+                if bucket[0] >= daily_limit:
+                    return 3600.0  # 等待 1 小时
+                bucket[0] += 1
 
-        return None
+            return None
 
     def reset_key(self, api_key: str) -> None:
         """重置某个 key 的限流计数"""
-        self._minute_buckets.pop(api_key, None)
-        self._daily_buckets.pop(api_key, None)
+        with self._lock:
+            self._minute_buckets.pop(api_key, None)
+            self._daily_buckets.pop(api_key, None)
 
 
 class GatewayMiddleware:
@@ -75,6 +112,7 @@ class GatewayMiddleware:
         self._config = config
         self._rate_limiter = RateLimiter()
         self._active_requests = active_requests_counter
+        self._counter_lock = threading.Lock()  # Thread safety for active request counter
         self._api_keys: Dict[str, dict] = {}
         if config:
             self._load_api_keys(config)
@@ -95,70 +133,98 @@ class GatewayMiddleware:
             await self.app(scope, receive, send)
             return
 
-        from starlette.requests import Request
-        from starlette.responses import Response as StarletteResponse
-
         request = Request(scope, receive)
         path = scope.get("path", "")
 
-        # CORS 预检
+        # CORS preflight
         if request.method == "OPTIONS":
             response = self._cors_response()
             await response(scope, receive, send)
             return
 
-        # 跳过不需要认证的路径
+        # Public path bypass
         if self._is_public_path(path):
             await self.app(scope, receive, send)
             return
 
-        # 认证
+        # Authentication
         api_key, key_config = self._authenticate(request)
         if not api_key:
-            response = JSONResponse(
-                status_code=401,
-                content={"error": {"message": "Invalid or missing API key", "type": "auth_error"}},
-            )
-            await response(scope, receive, send)
+            await self._create_error_response(401, "Invalid or missing API key", "auth_error")(scope, receive, send)
             return
 
+        # Key validity check
+        error_response = self._check_key_validity(key_config)
+        if error_response:
+            await error_response(scope, receive, send)
+            return
+
+        # Rate limiting
+        error_response = self._check_rate_limit(api_key, key_config)
+        if error_response:
+            await error_response(scope, receive, send)
+            return
+
+        # Inject state
+        self._inject_scope_state(scope, api_key, key_config)
+
+        # Active request counting
+        if self._active_requests is not None:
+            with self._counter_lock:
+                self._active_requests["count"] += 1
+
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            if self._active_requests is not None:
+                with self._counter_lock:
+                    self._active_requests["count"] -= 1
+
+    def _create_error_response(self, status_code: int, message: str, error_type: str, headers: dict = None) -> JSONResponse:
+        """Create error JSONResponse."""
+        return JSONResponse(
+            status_code=status_code,
+            content={"error": {"message": message, "type": error_type}},
+            headers=headers or {},
+        )
+
+    def _check_key_validity(self, key_config: dict) -> JSONResponse | None:
+        """Check if key is enabled and not expired. Returns error response if invalid."""
         if not key_config.get("enabled", True):
-            response = JSONResponse(
+            return JSONResponse(
                 status_code=403,
                 content={"error": {"message": "API key is disabled", "type": "forbidden"}},
             )
-            await response(scope, receive, send)
-            return
 
-        # 检查过期
         expires_at = key_config.get("expires_at")
         if expires_at:
             from datetime import datetime
             try:
                 if datetime.fromisoformat(expires_at) < datetime.now():
-                    response = JSONResponse(
+                    return JSONResponse(
                         status_code=403,
                         content={"error": {"message": "API key has expired", "type": "forbidden"}},
                     )
-                    await response(scope, receive, send)
-                    return
             except ValueError:
                 pass
 
-        # 限流
+        return None
+
+    def _check_rate_limit(self, api_key: str, key_config: dict) -> JSONResponse | None:
+        """Check rate limit. Returns error response if exceeded."""
         rate_limit = key_config.get("rate_limit", 60)
         daily_limit = key_config.get("daily_limit", 0)
         retry_after = self._rate_limiter.check(api_key, rate_limit, daily_limit)
         if retry_after is not None:
-            response = JSONResponse(
+            return JSONResponse(
                 status_code=429,
                 content={"error": {"message": "Rate limit exceeded", "type": "rate_limit"}},
                 headers={"Retry-After": str(int(retry_after))},
             )
-            await response(scope, receive, send)
-            return
+        return None
 
-        # 注入 key 信息到 scope["state"]
+    def _inject_scope_state(self, scope: dict, api_key: str, key_config: dict) -> None:
+        """Inject API key info into scope state."""
         if "state" not in scope:
             scope["state"] = {}
         scope["state"]["api_key"] = api_key
@@ -168,16 +234,6 @@ class GatewayMiddleware:
             key_name = api_key[:3] + "****" + api_key[-4:] if len(api_key) > 7 else api_key[:3] + "****"
         scope["state"]["api_key_name"] = key_name
         scope["state"]["api_key_config"] = key_config
-
-        # 活跃请求计数
-        if self._active_requests is not None:
-            self._active_requests["count"] += 1
-
-        try:
-            await self.app(scope, receive, send)
-        finally:
-            if self._active_requests is not None:
-                self._active_requests["count"] -= 1
 
     def _authenticate(self, request: Request):
         """从请求中提取并验证 API Key"""

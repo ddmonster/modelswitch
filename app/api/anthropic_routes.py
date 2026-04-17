@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -11,6 +13,9 @@ from app.utils.message_converter import (
     convert_openai_to_anthropic_response,
     openai_stream_to_anthropic,
 )
+from app.utils.tracking import track_request, StreamAccumulator
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -80,29 +85,6 @@ async def messages(request: Request):
         )
 
 
-async def _record(
-    app_state,
-    request_id,
-    model,
-    result,
-    api_key_alias="",
-    messages=None,
-    stream_output=None,
-):
-    """记录用量统计和日志"""
-    from app.utils.tracking import track_request
-
-    await track_request(
-        app_state,
-        request_id,
-        model,
-        result,
-        api_key_alias,
-        messages=messages,
-        stream_output=stream_output,
-    )
-
-
 async def _handle_non_stream(
     request,
     chain_router,
@@ -122,7 +104,7 @@ async def _handle_non_stream(
     )
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-    await _record(
+    await track_request(
         request.app.state, request_id, model, result, api_key_alias, messages=messages
     )
 
@@ -178,7 +160,7 @@ async def _handle_stream(
 
     if not result.success:
         api_key_alias = getattr(request.state, "api_key_name", "")
-        await _record(
+        await track_request(
             request.app.state,
             request_id,
             model,
@@ -197,10 +179,7 @@ async def _handle_stream(
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-
-    # 流式输出累积器
-    collected_text = []
-    collected_tool_calls = {}  # index -> {"name": str, "arguments": str}
+    accumulator = StreamAccumulator()
 
     async def capturing_stream(raw_stream):
         """包装原始流，在传给转换器之前累积输出内容"""
@@ -208,31 +187,7 @@ async def _handle_stream(
             if isinstance(chunk, dict) and chunk.get("_stream_error"):
                 yield chunk
                 return
-            chunk_data = _to_dict(chunk)
-            if not isinstance(chunk_data, dict):
-                yield chunk
-                continue
-
-            choices = chunk_data.get("choices", [])
-            if choices:
-                delta = choices[0].get("delta", {})
-                if delta.get("content"):
-                    collected_text.append(delta["content"])
-                elif delta.get("reasoning_content"):
-                    collected_text.append(delta["reasoning_content"])
-                for tc in delta.get("tool_calls", []):
-                    idx = tc.get("index", 0)
-                    func = tc.get("function", {})
-                    if idx not in collected_tool_calls:
-                        collected_tool_calls[idx] = {
-                            "name": func.get("name", ""),
-                            "arguments": func.get("arguments", ""),
-                        }
-                    else:
-                        if func.get("name"):
-                            collected_tool_calls[idx]["name"] = func["name"]
-                        if func.get("arguments"):
-                            collected_tool_calls[idx]["arguments"] += func["arguments"]
+            accumulator.process_chunk(chunk)
             yield chunk
 
     async def generate():
@@ -267,6 +222,10 @@ async def _handle_stream(
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(error_data)}\n\n"
+        except asyncio.CancelledError:
+            # Client disconnected - don't try to send error, just propagate
+            logger.debug(f"Stream cancelled by client disconnect")
+            raise
         except Exception as e:
             error_data = {
                 "type": "error",
@@ -281,24 +240,9 @@ async def _handle_stream(
                 if info.get("usage"):
                     result.usage = info["usage"]
 
-            # 构建流式输出摘要
-            stream_output = None
-            parts = []
-            if collected_text:
-                parts.append({"type": "text", "text": "".join(collected_text)})
-            for idx in sorted(collected_tool_calls):
-                tc = collected_tool_calls[idx]
-                parts.append(
-                    {
-                        "type": "tool_use",
-                        "name": tc["name"],
-                        "arguments": tc["arguments"],
-                    }
-                )
-            if parts:
-                stream_output = parts
+            stream_output = accumulator.get_output_summary()
 
-            await _record(
+            await track_request(
                 request.app.state,
                 request_id,
                 model,

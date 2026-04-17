@@ -263,21 +263,30 @@ except ImportError:
 
 # ========== 全局异常处理 ==========
 
+import json
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.core.exceptions import GatewayError
 
 
 @app.exception_handler(GatewayError)
 async def gateway_error_handler(request: Request, exc: GatewayError):
+    """Handle custom gateway exceptions with proper format."""
+    request_id = getattr(request.state, "request_id", "")
     path = request.url.path
+
+    # Add X-Request-ID header
+    headers = {"X-Request-ID": request_id} if request_id else {}
+
     if "/v1/messages" in path or "/anthropic/" in path:
         return JSONResponse(
             status_code=exc.status_code,
             content={
                 "type": "error",
-                "error": {"type": "api_error", "message": exc.message},
+                "error": {"type": exc.detail.get("type", "api_error"), "message": exc.message},
             },
+            headers=headers,
         )
     else:
         return JSONResponse(
@@ -285,19 +294,79 @@ async def gateway_error_handler(request: Request, exc: GatewayError):
             content={
                 "error": {
                     "message": exc.message,
-                    "type": "upstream_error",
+                    "type": exc.detail.get("type", "upstream_error"),
                     "code": exc.detail.get("type", ""),
+                    "request_id": request_id,
                 }
             },
+            headers=headers,
         )
+
+
+@app.exception_handler(json.JSONDecodeError)
+async def json_decode_error_handler(request: Request, exc: json.JSONDecodeError):
+    """Handle malformed JSON in request body."""
+    request_id = getattr(request.state, "request_id", "")
+    logging.getLogger("modelswitch").warning(
+        f"[{request_id}] JSON decode error: {exc.msg} at position {exc.pos}"
+    )
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": f"Invalid JSON in request body: {exc.msg}",
+                "type": "invalid_request_error",
+                "request_id": request_id,
+            }
+        },
+        headers={"X-Request-ID": request_id} if request_id else {},
+    )
+
+
+@app.exception_handler(ValidationError)
+async def validation_error_handler(request: Request, exc: ValidationError):
+    """Handle Pydantic validation errors with field details."""
+    request_id = getattr(request.state, "request_id", "")
+    errors = exc.errors()
+    error_details = [
+        {"field": ".".join(str(loc) for loc in e["loc"]), "message": e["msg"]}
+        for e in errors
+    ]
+    logging.getLogger("modelswitch").warning(
+        f"[{request_id}] Validation error: {error_details}"
+    )
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": "Request validation failed",
+                "type": "invalid_request_error",
+                "details": error_details,
+                "request_id": request_id,
+            }
+        },
+        headers={"X-Request-ID": request_id} if request_id else {},
+    )
 
 
 @app.exception_handler(Exception)
 async def generic_error_handler(request: Request, exc: Exception):
-    logging.getLogger("modelswitch").error(f"Unhandled error: {exc}", exc_info=True)
+    """Handle unexpected exceptions with logging."""
+    request_id = getattr(request.state, "request_id", "")
+    logging.getLogger("modelswitch").error(
+        f"[{request_id}] Unhandled error: {type(exc).__name__}: {exc}",
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=500,
-        content={"error": {"message": "Internal server error", "type": "server_error"}},
+        content={
+            "error": {
+                "message": "Internal server error",
+                "type": "server_error",
+                "request_id": request_id,
+            }
+        },
+        headers={"X-Request-ID": request_id} if request_id else {},
     )
 
 

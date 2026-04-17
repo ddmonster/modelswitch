@@ -197,9 +197,176 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         # 添加响应头
         response.headers["X-Request-ID"] = request_id
 
-        logger.debug(
-            f"response status={response.status_code} latency={latency:.0f}ms",
-            extra={"request_id": request_id},
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Adapter Debug Logging Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class AdapterLogger:
+    """Structured logger for adapter requests/responses with request context."""
+
+    def __init__(self, adapter_name: str, request_id: str = ""):
+        self.adapter_name = adapter_name
+        self.request_id = request_id
+        self._logger = logging.getLogger(f"modelswitch.adapter.{adapter_name}")
+
+    def _log(self, level: int, message: str, **context) -> None:
+        """Log with structured context."""
+        extra = {"request_id": self.request_id, "adapter": self.adapter_name}
+        full_msg = f"[{self.request_id}] {message}"
+        for k, v in context.items():
+            if v is not None:
+                full_msg += f" {k}={v}"
+        self._logger.log(level, full_msg, extra=extra)
+        # Also add to buffer
+        add_log_to_buffer(
+            self.request_id,
+            logging.getLevelName(level),
+            full_msg,
+            api_key=context.get("api_key", ""),
         )
 
-        return response
+    def debug(self, message: str, **context) -> None:
+        self._log(logging.DEBUG, message, **context)
+
+    def info(self, message: str, **context) -> None:
+        self._log(logging.INFO, message, **context)
+
+    def warning(self, message: str, **context) -> None:
+        self._log(logging.WARNING, message, **context)
+
+    def error(self, message: str, **context) -> None:
+        self._log(logging.ERROR, message, **context)
+
+    def log_request(
+        self,
+        model: str,
+        stream: bool,
+        timeout: int,
+        messages_count: int,
+        params: dict | None = None,
+    ) -> None:
+        """Log outgoing request to upstream."""
+        self.debug(
+            f"adapter_request_start",
+            model=model,
+            stream=stream,
+            timeout=timeout,
+            messages_count=messages_count,
+            params_count=len(params or {}),
+        )
+        # Log params at debug level (may contain sensitive data)
+        if params:
+            safe_params = self._sanitize_params(params)
+            self.debug(f"request_params {json.dumps(safe_params)}")
+
+    def log_response_start(
+        self,
+        model: str,
+        latency_ms: float,
+        status_code: int,
+        usage: dict | None = None,
+    ) -> None:
+        """Log successful response from upstream."""
+        self.info(
+            f"adapter_response_ok",
+            model=model,
+            latency_ms=f"{latency_ms:.0f}",
+            status=status_code,
+            prompt_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+            completion_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        )
+
+    def log_stream_chunk(
+        self,
+        chunk_index: int,
+        content_preview: str = "",
+        tool_calls_count: int = 0,
+    ) -> None:
+        """Log stream chunk processing."""
+        preview = content_preview[:50] if content_preview else ""
+        self.debug(
+            f"stream_chunk",
+            chunk_index=chunk_index,
+            content_preview=preview,
+            tool_calls=tool_calls_count,
+        )
+
+    def log_stream_complete(
+        self,
+        model: str,
+        total_chunks: int,
+        latency_ms: float,
+        usage: dict | None = None,
+    ) -> None:
+        """Log stream completion."""
+        self.info(
+            f"adapter_stream_complete",
+            model=model,
+            chunks=total_chunks,
+            latency_ms=f"{latency_ms:.0f}",
+            prompt_tokens=usage.get("prompt_tokens", 0) if usage else 0,
+            completion_tokens=usage.get("completion_tokens", 0) if usage else 0,
+        )
+
+    def log_error(
+        self,
+        model: str,
+        error_type: str,
+        error_message: str,
+        latency_ms: float,
+        status_code: int,
+        upstream_response: str | None = None,
+    ) -> None:
+        """Log adapter error with details."""
+        self.error(
+            f"adapter_error",
+            model=model,
+            error_type=error_type,
+            status=status_code,
+            latency_ms=f"{latency_ms:.0f}",
+            error=error_message[:200],
+        )
+        if upstream_response:
+            self.debug(f"upstream_response_preview {upstream_response[:500]}")
+
+    def log_parse_error(
+        self,
+        model: str,
+        parse_stage: str,
+        error_message: str,
+        raw_data_preview: str = "",
+    ) -> None:
+        """Log parsing error during response processing."""
+        self.error(
+            f"parse_error",
+            model=model,
+            stage=parse_stage,
+            error=error_message[:200],
+            raw_preview=raw_data_preview[:100],
+        )
+
+    def _sanitize_params(self, params: dict) -> dict:
+        """Remove sensitive fields from params for logging."""
+        sensitive_keys = {"api_key", "key", "token", "authorization", "password"}
+        result = {}
+        for k, v in params.items():
+            if k.lower() in sensitive_keys:
+                result[k] = "[REDACTED]"
+            elif isinstance(v, dict):
+                result[k] = self._sanitize_params(v)
+            elif isinstance(v, list):
+                result[k] = f"[list:{len(v)}]"
+            else:
+                # Truncate large values
+                if isinstance(v, str) and len(v) > 100:
+                    result[k] = v[:100] + "..."
+                else:
+                    result[k] = v
+        return result
+
+
+def get_adapter_logger(adapter_name: str, request_id: str = "") -> AdapterLogger:
+    """Get an adapter logger instance."""
+    return AdapterLogger(adapter_name, request_id)

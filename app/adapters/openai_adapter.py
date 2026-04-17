@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
 
-from openai import AsyncOpenAI, APITimeoutError, APIStatusError
+from openai import AsyncOpenAI, APITimeoutError, APIStatusError, APIConnectionError
 
-from app.adapters.base import AdapterResponse, BaseAdapter
+from app.adapters.base import AdapterResponse, BaseAdapter, create_error_response
 from app.models.config_models import ProviderConfig
 from app.core.request_queue import get_queue_manager
+from app.utils.logging import get_adapter_logger
 
 logger = logging.getLogger(__name__)
 
@@ -103,173 +105,323 @@ class OpenAIAdapter(BaseAdapter):
         **kwargs: Any,
     ) -> AdapterResponse:
         start = time.monotonic()
+        adapter_logger = get_adapter_logger(self.name, request_id)
+
+        # Log request details
+        adapter_logger.log_request(
+            model=model_name,
+            stream=stream,
+            timeout=timeout,
+            messages_count=len(messages),
+            params=kwargs,
+        )
 
         try:
-            # 分离标准参数和扩展参数（DashScope 等可能有非标准参数如 top_k）
-            standard_params: dict[str, Any] = {}
-            extra_body: dict[str, Any] = {}
-            for k, v in kwargs.items():
-                if k in _OPENAI_STANDARD_PARAMS:
-                    standard_params[k] = v
-                else:
-                    extra_body[k] = v
+            create_kwargs = self._build_create_kwargs(model_name, messages, stream, timeout, **kwargs)
 
-            create_kwargs: dict[str, Any] = {
-                "model": model_name,
-                "messages": messages,
-                "stream": stream,
-                "timeout": timeout,
-                **standard_params,
-            }
-            # 流式请求自动启用 usage 统计（除非 provider 不支持）
-            if stream and "stream_options" not in create_kwargs:
-                if not self.provider.disable_stream_options:
-                    create_kwargs["stream_options"] = {"include_usage": True}
-            if extra_body:
-                create_kwargs["extra_body"] = extra_body
-            if self.provider.custom_headers:
-                create_kwargs["extra_headers"] = self.provider.custom_headers
+            # Log create_kwargs at debug level
+            adapter_logger.debug(
+                f"api_call_start",
+                model=model_name,
+                stream=stream,
+                kwargs_keys=list(create_kwargs.keys()),
+            )
 
             response = await self._client.chat.completions.create(**create_kwargs)
 
             if stream:
-                resp_ref = None  # 用于在闭包中引用 AdapterResponse
-
-                async def stream_generator():
-                    try:
-                        chunk_count = 0
-                        content_chars = 0
-                        reasoning_buffer = []  # 缓存推理内容
-                        reasoning_flushed = False
-                        model_id = model_name  # 用于构造合成 chunk
-
-                        async for chunk in response:
-                            chunk_count += 1
-                            # 捕获最终 chunk 中的 usage（stream_options.include_usage）
-                            if hasattr(chunk, "usage") and chunk.usage is not None:
-                                if resp_ref is not None:
-                                    resp_ref.usage = {
-                                        "prompt_tokens": chunk.usage.prompt_tokens or 0,
-                                        "completion_tokens": chunk.usage.completion_tokens or 0,
-                                    }
-
-                            if hasattr(chunk, "choices") and chunk.choices:
-                                choice = chunk.choices[0]
-                                # delta 可能是 SDK 对象或 mock dict
-                                if isinstance(choice, dict):
-                                    delta = choice.get("delta", {})
-                                    rc = delta.get("reasoning_content")
-                                    ct = delta.get("content")
-                                else:
-                                    delta = getattr(choice, "delta", None)
-                                    if delta is None:
-                                        continue
-                                    rc = getattr(delta, "reasoning_content", None)
-                                    ct = getattr(delta, "content", None)
-
-                                if rc:
-                                    reasoning_buffer.append(rc)
-                                if ct:
-                                    # 首次出现 content 时，一次性发送缓存的推理内容
-                                    if reasoning_buffer and not reasoning_flushed:
-                                        reasoning_text = "".join(reasoning_buffer)
-                                        content_chars += len(reasoning_text)
-                                        yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
-                                        reasoning_flushed = True
-                                    content_chars += len(ct)
-                                    yield chunk
-                                elif rc:
-                                    # 只有 reasoning_content，暂不发送（继续缓冲）
-                                    continue
-                                else:
-                                    # 既无 reasoning 也无 content（如 finish_reason chunk），直接透传
-                                    yield chunk
-                            else:
-                                yield chunk
-                        # 流结束：如果只有推理内容没有实际 content，也要刷新缓冲
-                        if reasoning_buffer and not reasoning_flushed:
-                            reasoning_text = "".join(reasoning_buffer)
-                            content_chars += len(reasoning_text)
-                            # 使用最后一个 chunk 作为模板（或构造最小 chunk）
-                            try:
-                                yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
-                            except Exception:
-                                pass
-                        elapsed = (time.monotonic() - start) * 1000
-                        # Fallback: provider 未返回 usage 时，从流式内容估算 token 数
-                        if resp_ref is not None and resp_ref.usage is None and content_chars > 0:
-                            estimated = max(1, content_chars // 3)
-                            logger.debug(
-                                f"[{request_id}] usage_not_reported provider={self.name} "
-                                f"estimated_output_tokens={estimated} from {content_chars} chars"
-                            )
-                            resp_ref.usage = {
-                                "prompt_tokens": 0,
-                                "completion_tokens": estimated,
-                            }
-                        logger.debug(
-                            f"[{request_id}] stream_complete provider={self.name} "
-                            f"chunks={chunk_count} elapsed={elapsed:.0f}ms"
-                        )
-                    except Exception as e:
-                        elapsed = (time.monotonic() - start) * 1000
-                        logger.error(
-                            f"[{request_id}] stream_error provider={self.name} "
-                            f"error={e} elapsed={elapsed:.0f}ms"
-                        )
-                        raise
-
-                latency = (time.monotonic() - start) * 1000
-                adapter_resp = AdapterResponse(
-                    status_code=200, success=True,
-                    stream=stream_generator(),
-                    adapter_name=self.name, model_name=model_name,
-                    latency_ms=latency,
+                return await self._create_stream_response(
+                    response, model_name, start, request_id, adapter_logger
                 )
-                resp_ref = adapter_resp
-                return adapter_resp
             else:
-                # reasoning_content 由下游转换器处理为 thinking 块，无需合并
-                latency = (time.monotonic() - start) * 1000
-                usage = None
-                if response.usage:
-                    usage = {
-                        "prompt_tokens": response.usage.prompt_tokens or 0,
-                        "completion_tokens": response.usage.completion_tokens or 0,
-                    }
-
-                logger.debug(
-                    f"[{request_id}] api_response provider={self.name} "
-                    f"status=200 latency={latency:.0f}ms usage={usage}"
-                )
-
-                return AdapterResponse(
-                    status_code=200, success=True, body=response,
-                    adapter_name=self.name, model_name=model_name,
-                    latency_ms=latency, usage=usage,
+                return self._create_non_stream_response(
+                    response, model_name, start, request_id, adapter_logger
                 )
 
         except APITimeoutError as e:
             latency = (time.monotonic() - start) * 1000
-            logger.warning(f"[{request_id}] api_timeout provider={self.name} latency={latency:.0f}ms")
-            return AdapterResponse(
-                status_code=504, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="timeout",
+                error_message=str(e),
+                latency_ms=latency,
+                status_code=504,
             )
+            return create_error_response(
+                self.name, model_name, latency, 504, str(e), request_id
+            )
+
+        except APIConnectionError as e:
+            latency = (time.monotonic() - start) * 1000
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="connection",
+                error_message=str(e),
+                latency_ms=latency,
+                status_code=503,
+            )
+            return create_error_response(
+                self.name, model_name, latency, 503, str(e), request_id
+            )
+
         except APIStatusError as e:
             latency = (time.monotonic() - start) * 1000
-            logger.warning(
-                f"[{request_id}] api_error provider={self.name} "
-                f"status={e.status_code} error={e}"
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="api_status",
+                error_message=str(e),
+                latency_ms=latency,
+                status_code=e.status_code,
+                upstream_response=str(e.response) if e.response else "",
             )
-            return AdapterResponse(
-                status_code=e.status_code, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+            return create_error_response(
+                self.name, model_name, latency, e.status_code, str(e), request_id
             )
+
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
-            logger.error(f"[{request_id}] api_exception provider={self.name} error={e}")
-            return AdapterResponse(
-                status_code=502, success=False, adapter_name=self.name,
-                model_name=model_name, latency_ms=latency, error=str(e)
+            adapter_logger.log_error(
+                model=model_name,
+                error_type="unexpected",
+                error_message=f"{type(e).__name__}: {str(e)}",
+                latency_ms=latency,
+                status_code=502,
             )
+            logger.exception(f"[{request_id}] Unexpected error in OpenAI adapter")
+            return create_error_response(
+                self.name, model_name, latency, 502, str(e), request_id
+            )
+
+    def _build_create_kwargs(
+        self,
+        model_name: str,
+        messages: list,
+        stream: bool,
+        timeout: int,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Build kwargs for client.chat.completions.create()."""
+        # Separate standard params from extension params
+        standard_params: dict[str, Any] = {}
+        extra_body: dict[str, Any] = {}
+        for k, v in kwargs.items():
+            if k in _OPENAI_STANDARD_PARAMS:
+                standard_params[k] = v
+            else:
+                extra_body[k] = v
+
+        create_kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": messages,
+            "stream": stream,
+            "timeout": timeout,
+            **standard_params,
+        }
+        # Auto-enable usage for streaming (unless provider doesn't support)
+        if stream and "stream_options" not in create_kwargs:
+            if not self.provider.disable_stream_options:
+                create_kwargs["stream_options"] = {"include_usage": True}
+        if extra_body:
+            create_kwargs["extra_body"] = extra_body
+        if self.provider.custom_headers:
+            create_kwargs["extra_headers"] = self.provider.custom_headers
+
+        return create_kwargs
+
+    async def _create_stream_response(
+        self,
+        response,
+        model_name: str,
+        start: float,
+        request_id: str,
+        adapter_logger: Any,
+    ) -> AdapterResponse:
+        """Create AdapterResponse with stream generator."""
+        resp_ref = None  # Reference for AdapterResponse in closure
+
+        async def stream_generator():
+            try:
+                chunk_count = 0
+                content_chars = 0
+                reasoning_buffer = []
+                reasoning_flushed = False
+                model_id = model_name
+                tool_calls_count = 0
+
+                async for chunk in response:
+                    chunk_count += 1
+                    # Capture usage from final chunk
+                    if hasattr(chunk, "usage") and chunk.usage is not None:
+                        if resp_ref is not None:
+                            resp_ref.usage = {
+                                "prompt_tokens": chunk.usage.prompt_tokens or 0,
+                                "completion_tokens": chunk.usage.completion_tokens or 0,
+                            }
+
+                    if hasattr(chunk, "choices") and chunk.choices:
+                        choice = chunk.choices[0]
+                        # Handle dict or SDK object delta
+                        if isinstance(choice, dict):
+                            delta = choice.get("delta", {})
+                            rc = delta.get("reasoning_content")
+                            ct = delta.get("content")
+                        else:
+                            delta = getattr(choice, "delta", None)
+                            if delta is None:
+                                continue
+                            rc = getattr(delta, "reasoning_content", None)
+                            ct = getattr(delta, "content", None)
+
+                        if rc:
+                            reasoning_buffer.append(rc)
+                        if ct:
+                            # Flush reasoning on first content
+                            if reasoning_buffer and not reasoning_flushed:
+                                reasoning_text = "".join(reasoning_buffer)
+                                content_chars += len(reasoning_text)
+                                yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
+                                reasoning_flushed = True
+                            content_chars += len(ct)
+                            yield chunk
+                        elif rc:
+                            continue  # Buffer only, don't send
+                        else:
+                            yield chunk  # Finish reason chunk
+                    else:
+                        yield chunk
+
+                # Flush remaining reasoning at end
+                if reasoning_buffer and not reasoning_flushed:
+                    reasoning_text = "".join(reasoning_buffer)
+                    content_chars += len(reasoning_text)
+                    try:
+                        yield _make_reasoning_chunk(chunk, model_id, reasoning_text)
+                    except Exception as e:
+                        adapter_logger.log_parse_error(
+                            model=model_name,
+                            parse_stage="flush_reasoning",
+                            error_message=str(e),
+                            raw_data_preview=reasoning_text[:100],
+                        )
+
+                elapsed = (time.monotonic() - start) * 1000
+                # Fallback: estimate tokens if usage not reported
+                if resp_ref is not None and resp_ref.usage is None and content_chars > 0:
+                    estimated = max(1, content_chars // 3)
+                    adapter_logger.debug(
+                        f"usage_estimate",
+                        estimated_tokens=estimated,
+                        content_chars=content_chars,
+                    )
+                    resp_ref.usage = {
+                        "prompt_tokens": 0,
+                        "completion_tokens": estimated,
+                    }
+
+                # Log stream completion
+                adapter_logger.log_stream_complete(
+                    model=model_name,
+                    total_chunks=chunk_count,
+                    latency_ms=elapsed,
+                    usage=resp_ref.usage if resp_ref else None,
+                )
+
+            except asyncio.CancelledError:
+                # Client disconnected - clean up and propagate cancellation
+                elapsed = (time.monotonic() - start) * 1000
+                adapter_logger.debug(
+                    f"stream_cancelled",
+                    model=model_name,
+                    chunks=chunk_count,
+                    latency_ms=f"{elapsed:.0f}",
+                )
+                logger.debug(f"[{request_id}] Stream cancelled by client")
+                raise  # Must re-raise CancelledError
+
+            except Exception as e:
+                elapsed = (time.monotonic() - start) * 1000
+                adapter_logger.log_error(
+                    model=model_name,
+                    error_type="stream",
+                    error_message=f"{type(e).__name__}: {str(e)}",
+                    latency_ms=elapsed,
+                    status_code=502,
+                )
+                logger.exception(f"[{request_id}] Stream error in OpenAI adapter")
+                raise
+
+        latency = (time.monotonic() - start) * 1000
+        adapter_resp = AdapterResponse(
+            status_code=200,
+            success=True,
+            stream=stream_generator(),
+            adapter_name=self.name,
+            model_name=model_name,
+            latency_ms=latency,
+        )
+        resp_ref = adapter_resp
+        return adapter_resp
+
+    def _create_non_stream_response(
+        self,
+        response,
+        model_name: str,
+        start: float,
+        request_id: str,
+        adapter_logger: Any,
+    ) -> AdapterResponse:
+        """Create AdapterResponse for non-stream response."""
+        latency = (time.monotonic() - start) * 1000
+        usage = None
+        if response.usage:
+            usage = {
+                "prompt_tokens": response.usage.prompt_tokens or 0,
+                "completion_tokens": response.usage.completion_tokens or 0,
+            }
+
+        # Log response
+        adapter_logger.log_response_start(
+            model=model_name,
+            latency_ms=latency,
+            status_code=200,
+            usage=usage,
+        )
+
+        # Log response structure at debug level
+        if hasattr(response, "choices") and response.choices:
+            choice = response.choices[0]
+            # Handle both SDK object and dict (for mocked tests)
+            if isinstance(choice, dict):
+                msg = choice.get("message", {})
+                content_preview = msg.get("content", "")[:100] if msg.get("content") else ""
+                tool_calls_count = len(msg.get("tool_calls", []) or [])
+                finish_reason = choice.get("finish_reason", "")
+            else:
+                msg = getattr(choice, "message", None)
+                if msg:
+                    content_preview = ""
+                    if hasattr(msg, "content") and msg.content:
+                        content_preview = msg.content[:100]
+                    tool_calls_count = len(getattr(msg, "tool_calls", []) or [])
+                    finish_reason = getattr(choice, "finish_reason", "")
+                else:
+                    content_preview = ""
+                    tool_calls_count = 0
+                    finish_reason = ""
+
+            adapter_logger.debug(
+                f"response_structure",
+                content_preview=content_preview,
+                tool_calls=tool_calls_count,
+                finish_reason=finish_reason,
+            )
+
+        return AdapterResponse(
+            status_code=200,
+            success=True,
+            body=response,
+            adapter_name=self.name,
+            model_name=model_name,
+            latency_ms=latency,
+            usage=usage,
+        )
