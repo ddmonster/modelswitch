@@ -10,15 +10,27 @@ from openai import AsyncOpenAI, APITimeoutError, APIStatusError, APIConnectionEr
 from app.adapters.base import AdapterResponse, BaseAdapter, create_error_response
 from app.models.config_models import ProviderConfig
 from app.core.request_queue import get_queue_manager
-from app.utils.logging import get_adapter_logger
+from app.utils.logging import get_adapter_logger, get_protocol_logger
 
 logger = logging.getLogger(__name__)
 
-# OpenAI chat completion API 标准参数
+# OpenAI chat completion API 标准参数（会被直接传递给 create()）
+# 非标准参数会通过 extra_body 传递给上游（vLLM 支持）
 _OPENAI_STANDARD_PARAMS = {
-    "max_tokens", "temperature", "top_p", "stop", "tools", "tool_choice",
-    "response_format", "seed", "n", "frequency_penalty", "presence_penalty",
-    "logprobs", "top_logprobs", "stream_options", "max_completion_tokens",
+    # 核心参数
+    "max_tokens", "temperature", "top_p", "stop", "seed", "n",
+    # 工具调用
+    "tools", "tool_choice",
+    # 格式控制
+    "response_format", "stream_options", "max_completion_tokens",
+    # 惩罚参数
+    "frequency_penalty", "presence_penalty",
+    # 日志概率
+    "logprobs", "top_logprobs",
+    # 其他标准参数
+    "logit_bias", "metadata",
+    # 用户标识
+    "user",
 }
 
 
@@ -117,7 +129,9 @@ class OpenAIAdapter(BaseAdapter):
         )
 
         try:
-            create_kwargs = self._build_create_kwargs(model_name, messages, stream, timeout, **kwargs)
+            create_kwargs = self._build_create_kwargs(
+                model_name, messages, stream, timeout, request_id, **kwargs
+            )
 
             # Log create_kwargs at debug level
             adapter_logger.debug(
@@ -210,9 +224,13 @@ class OpenAIAdapter(BaseAdapter):
         messages: list,
         stream: bool,
         timeout: int,
+        request_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build kwargs for client.chat.completions.create()."""
+        # 创建协议日志器
+        protocol_logger = get_protocol_logger(request_id, "openai")
+
         # Separate standard params from extension params
         standard_params: dict[str, Any] = {}
         extra_body: dict[str, Any] = {}
@@ -229,14 +247,60 @@ class OpenAIAdapter(BaseAdapter):
             "timeout": timeout,
             **standard_params,
         }
+
         # Auto-enable usage for streaming (unless provider doesn't support)
+        stream_options_applied = None
+        stream_options_disabled_reason = ""
         if stream and "stream_options" not in create_kwargs:
-            if not self.provider.disable_stream_options:
+            if self.provider.disable_stream_options:
+                stream_options_disabled_reason = "provider.disable_stream_options=true (vLLM compatibility)"
+                protocol_logger.log_stream_options(
+                    requested=None,
+                    applied=None,
+                    disabled_reason=stream_options_disabled_reason,
+                )
+            else:
                 create_kwargs["stream_options"] = {"include_usage": True}
+                stream_options_applied = create_kwargs["stream_options"]
+                protocol_logger.log_stream_options(
+                    requested=None,
+                    applied=stream_options_applied,
+                    disabled_reason="",
+                )
+        elif stream and "stream_options" in create_kwargs:
+            # 用户已提供 stream_options
+            protocol_logger.log_stream_options(
+                requested=create_kwargs["stream_options"],
+                applied=create_kwargs["stream_options"],
+                disabled_reason="",
+            )
+
         if extra_body:
             create_kwargs["extra_body"] = extra_body
         if self.provider.custom_headers:
             create_kwargs["extra_headers"] = self.provider.custom_headers
+
+        # 记录上游请求参数
+        protocol_logger.log_upstream_request(
+            adapter=self.name,
+            model=model_name,
+            stream=stream,
+            create_kwargs_keys=list(create_kwargs.keys()),
+            extra_body_keys=list(extra_body.keys()) if extra_body else None,
+            extra_headers_keys=list(self.provider.custom_headers.keys()) if self.provider.custom_headers else None,
+        )
+
+        # Debug level: 记录完整的 kwargs 结构
+        if standard_params:
+            protocol_logger.debug(
+                f"standard_params_detail",
+                keys=list(standard_params.keys()),
+            )
+        if extra_body:
+            protocol_logger.debug(
+                f"extra_body_detail",
+                keys=list(extra_body.keys()),
+            )
 
         return create_kwargs
 
@@ -249,6 +313,7 @@ class OpenAIAdapter(BaseAdapter):
         adapter_logger: Any,
     ) -> AdapterResponse:
         """Create AdapterResponse with stream generator."""
+        protocol_logger = get_protocol_logger(request_id, "openai")
         resp_ref = None  # Reference for AdapterResponse in closure
 
         async def stream_generator():
@@ -259,6 +324,7 @@ class OpenAIAdapter(BaseAdapter):
                 reasoning_flushed = False
                 model_id = model_name
                 tool_calls_count = 0
+                first_chunk_logged = False
 
                 async for chunk in response:
                     chunk_count += 1
@@ -277,12 +343,28 @@ class OpenAIAdapter(BaseAdapter):
                             delta = choice.get("delta", {})
                             rc = delta.get("reasoning_content")
                             ct = delta.get("content")
+                            # 检查 tool_calls delta
+                            tc_delta = delta.get("tool_calls")
                         else:
                             delta = getattr(choice, "delta", None)
                             if delta is None:
                                 continue
                             rc = getattr(delta, "reasoning_content", None)
                             ct = getattr(delta, "content", None)
+                            tc_delta = getattr(delta, "tool_calls", None)
+
+                        # 记录首个 chunk 的格式（用于排查协议问题）
+                        if not first_chunk_logged:
+                            delta_keys = list(delta.keys()) if isinstance(delta, dict) else []
+                            has_usage = hasattr(chunk, "usage") and chunk.usage is not None
+                            protocol_logger.log_chunk_format(
+                                chunk_index=0,
+                                has_delta=True,
+                                delta_keys=delta_keys,
+                                has_tool_calls_delta=tc_delta is not None and len(tc_delta) > 0,
+                                has_usage=has_usage,
+                            )
+                            first_chunk_logged = True
 
                         if rc:
                             reasoning_buffer.append(rc)
@@ -338,6 +420,15 @@ class OpenAIAdapter(BaseAdapter):
                     usage=resp_ref.usage if resp_ref else None,
                 )
 
+                # 协议日志：流式响应格式总结
+                protocol_logger.log_response_format(
+                    response_type="chat.completion.chunk",
+                    has_tool_calls=tool_calls_count > 0,
+                    has_reasoning=len(reasoning_buffer) > 0,
+                    finish_reason="stream_complete",
+                    content_preview=f"{chunk_count} chunks, {content_chars} chars",
+                )
+
             except asyncio.CancelledError:
                 # Client disconnected - clean up and propagate cancellation
                 elapsed = (time.monotonic() - start) * 1000
@@ -383,6 +474,7 @@ class OpenAIAdapter(BaseAdapter):
         adapter_logger: Any,
     ) -> AdapterResponse:
         """Create AdapterResponse for non-stream response."""
+        protocol_logger = get_protocol_logger(request_id, "openai")
         latency = (time.monotonic() - start) * 1000
         usage = None
         if response.usage:
@@ -400,6 +492,10 @@ class OpenAIAdapter(BaseAdapter):
         )
 
         # Log response structure at debug level
+        has_tool_calls = False
+        has_reasoning = False
+        finish_reason = ""
+        content_preview = ""
         if hasattr(response, "choices") and response.choices:
             choice = response.choices[0]
             # Handle both SDK object and dict (for mocked tests)
@@ -407,6 +503,9 @@ class OpenAIAdapter(BaseAdapter):
                 msg = choice.get("message", {})
                 content_preview = msg.get("content", "")[:100] if msg.get("content") else ""
                 tool_calls_count = len(msg.get("tool_calls", []) or [])
+                has_tool_calls = tool_calls_count > 0
+                # 检查 reasoning_content
+                has_reasoning = "reasoning_content" in msg and msg["reasoning_content"]
                 finish_reason = choice.get("finish_reason", "")
             else:
                 msg = getattr(choice, "message", None)
@@ -415,6 +514,9 @@ class OpenAIAdapter(BaseAdapter):
                     if hasattr(msg, "content") and msg.content:
                         content_preview = msg.content[:100]
                     tool_calls_count = len(getattr(msg, "tool_calls", []) or [])
+                    has_tool_calls = tool_calls_count > 0
+                    # 检查 reasoning_content
+                    has_reasoning = hasattr(msg, "reasoning_content") and getattr(msg, "reasoning_content", None)
                     finish_reason = getattr(choice, "finish_reason", "")
                 else:
                     content_preview = ""
@@ -426,6 +528,15 @@ class OpenAIAdapter(BaseAdapter):
                 content_preview=content_preview,
                 tool_calls=tool_calls_count,
                 finish_reason=finish_reason,
+            )
+
+            # 协议日志：响应格式分析
+            protocol_logger.log_response_format(
+                response_type="chat.completion",
+                has_tool_calls=has_tool_calls,
+                has_reasoning=has_reasoning,
+                finish_reason=finish_reason,
+                content_preview=content_preview,
             )
 
         return AdapterResponse(

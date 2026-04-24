@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.utils.message_converter import _to_dict
 from app.utils.tracking import track_request, StreamAccumulator
+from app.utils.logging import get_protocol_logger
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,11 +59,41 @@ async def chat_completions(request: Request):
     messages = body.get("messages", [])
     stream = body.get("stream", False)
 
+    # 获取 request_id
+    request_id = getattr(request.state, "request_id", "")
+
+    # 创建协议日志器
+    protocol_logger = get_protocol_logger(request_id, "openai")
+
+    # 分析请求体结构
+    has_tools = "tools" in body and body["tools"]
+    has_tool_choice = "tool_choice" in body
+    has_response_format = "response_format" in body
+    extra_params = []
+    for key in body.keys():
+        if key not in ("model", "messages", "stream", "temperature", "top_p",
+                       "max_tokens", "stop", "presence_penalty", "frequency_penalty",
+                       "user", "tools", "tool_choice", "response_format"):
+            extra_params.append(key)
+
+    protocol_logger.log_request_body(
+        model=model,
+        stream=stream,
+        has_tools=has_tools,
+        has_tool_choice=has_tool_choice,
+        has_response_format=has_response_format,
+        extra_params=extra_params,
+    )
+
     # 模型权限检查
     api_key_config = getattr(request.state, "api_key_config", None)
     if api_key_config:
         allowed_models = api_key_config.get("allowed_models", [])
         if allowed_models and model not in allowed_models:
+            protocol_logger.log_protocol_warning(
+                warning_type="model_not_allowed",
+                msg=f"Model '{model}' not in allowed_models: {allowed_models}",
+            )
             return JSONResponse(
                 status_code=403,
                 content={
@@ -73,10 +104,10 @@ async def chat_completions(request: Request):
                 },
             )
 
-    request_id = getattr(request.state, "request_id", "")
-
     # 提取额外参数（跳过空列表/空字典，如 tools: [] 会被上游拒绝）
     kwargs = {}
+    skipped_empty = []
+    standard_params_found = {}
     for key in (
         "temperature",
         "top_p",
@@ -92,10 +123,43 @@ async def chat_completions(request: Request):
         if key in body:
             val = body[key]
             if val is None or (isinstance(val, (list, dict)) and not val):
+                skipped_empty.append(key)
                 continue
             kwargs[key] = val
+            standard_params_found[key] = val
+
+    # 提取非标准参数（传递给 extra_body）
+    extension_params = {}
+    for key in extra_params:
+        val = body.get(key)
+        if val is not None:
+            extension_params[key] = val
+            kwargs[key] = val
+
+    protocol_logger.log_params_extracted(
+        standard_params=standard_params_found,
+        extension_params=extension_params if extension_params else None,
+        skipped_empty=skipped_empty,
+    )
+
+    # Tools 处理日志
+    if has_tools:
+        tools_list = body.get("tools", [])
+        tool_names = [t.get("function", {}).get("name", t.get("name", "unknown"))
+                      for t in tools_list[:10]]
+        protocol_logger.log_tools_handling(
+            tools_count=len(tools_list),
+            tool_choice=body.get("tool_choice"),
+            tools_preview=tool_names,
+        )
 
     if stream:
+        # 流式请求：检查 stream_options
+        requested_stream_options = body.get("stream_options")
+        protocol_logger.log_stream_options(
+            requested=requested_stream_options,
+            applied=None,  # adapter 层会处理
+        )
         return await _handle_stream(
             request, chain_router, model, messages, request_id, kwargs
         )

@@ -40,7 +40,7 @@ class ProviderConfig(BaseModel):
     # vLLM 兼容性配置
     disable_stream_options: bool = Field(
         default=False,
-        description="禁用 stream_options.include_usage（用于 vLLM 等不支持的 provider）"
+        description="禁用 stream_options.include_usage（某些旧版本 vLLM 或特殊 provider 可能不支持，默认 False 表示支持）"
     )
 
 

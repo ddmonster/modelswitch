@@ -884,21 +884,20 @@ class TestStandardParams:
     def test_standard_params_set(self):
         """Test that _OPENAI_STANDARD_PARAMS contains expected params."""
         expected_params = {
-            "max_tokens",
-            "temperature",
-            "top_p",
-            "stop",
-            "tools",
-            "tool_choice",
-            "response_format",
-            "seed",
-            "n",
-            "frequency_penalty",
-            "presence_penalty",
-            "logprobs",
-            "top_logprobs",
-            "stream_options",
-            "max_completion_tokens",
+            # 核心参数
+            "max_tokens", "temperature", "top_p", "stop", "seed", "n",
+            # 工具调用
+            "tools", "tool_choice",
+            # 格式控制
+            "response_format", "stream_options", "max_completion_tokens",
+            # 惩罚参数
+            "frequency_penalty", "presence_penalty",
+            # 日志概率
+            "logprobs", "top_logprobs",
+            # 其他标准参数
+            "logit_bias", "metadata",
+            # 用户标识
+            "user",
         }
         assert _OPENAI_STANDARD_PARAMS == expected_params
 

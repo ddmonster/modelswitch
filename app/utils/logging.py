@@ -419,3 +419,226 @@ class AdapterLogger:
 def get_adapter_logger(adapter_name: str, request_id: str = "") -> AdapterLogger:
     """Get an adapter logger instance."""
     return AdapterLogger(adapter_name, request_id)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Protocol Debug Logging Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class ProtocolLogger:
+    """Structured logger for protocol handling (request parsing, parameter passing, etc.)."""
+
+    def __init__(self, request_id: str = "", protocol: str = "openai"):
+        self.request_id = request_id
+        self.protocol = protocol
+        self._logger = logging.getLogger(f"modelswitch.protocol.{protocol}")
+
+    def _log(self, level: int, message: str, **context) -> None:
+        """Log with structured context."""
+        extra = {"request_id": self.request_id, "protocol": self.protocol}
+        full_msg = f"[{self.request_id}] protocol_{self.protocol} {message}"
+        for k, v in context.items():
+            if v is not None:
+                # Truncate large values in log message
+                val_str = str(v)
+                if len(val_str) > 200:
+                    val_str = val_str[:200] + "..."
+                full_msg += f" {k}={val_str}"
+        self._logger.log(level, full_msg, extra=extra)
+        # Add to buffer for info/warning/error levels
+        if level >= logging.INFO:
+            location = _get_caller_location(skip_frames=3)
+            add_log_to_buffer(
+                self.request_id,
+                logging.getLevelName(level),
+                full_msg,
+                location=location,
+            )
+
+    def debug(self, message: str, **context) -> None:
+        self._log(logging.DEBUG, message, **context)
+
+    def info(self, message: str, **context) -> None:
+        self._log(logging.INFO, message, **context)
+
+    def warning(self, message: str, **context) -> None:
+        self._log(logging.WARNING, message, **context)
+
+    def error(self, message: str, **context) -> None:
+        self._log(logging.ERROR, message, **context)
+
+    def log_request_body(
+        self,
+        model: str,
+        stream: bool,
+        has_tools: bool,
+        has_tool_choice: bool,
+        has_response_format: bool,
+        extra_params: list[str] | None = None,
+    ) -> None:
+        """Log incoming request body analysis."""
+        self.info(
+            f"request_received",
+            model=model,
+            stream=stream,
+            tools=has_tools,
+            tool_choice=has_tool_choice,
+            response_format=has_response_format,
+            extra_params=extra_params or [],
+        )
+
+    def log_params_extracted(
+        self,
+        standard_params: dict | None = None,
+        extension_params: dict | None = None,
+        skipped_empty: list[str] | None = None,
+    ) -> None:
+        """Log parameter extraction result."""
+        if standard_params:
+            self.debug(
+                f"params_standard",
+                keys=list(standard_params.keys()),
+                values=self._preview_params(standard_params),
+            )
+        if extension_params:
+            self.debug(
+                f"params_extension",
+                keys=list(extension_params.keys()),
+                values=self._preview_params(extension_params),
+            )
+        if skipped_empty:
+            self.debug(f"params_skipped_empty keys={skipped_empty}")
+
+    def log_stream_options(
+        self,
+        requested: dict | None,
+        applied: dict | None,
+        disabled_reason: str = "",
+    ) -> None:
+        """Log stream_options handling."""
+        if disabled_reason:
+            self.info(
+                f"stream_options_disabled",
+                reason=disabled_reason,
+                requested=requested,
+            )
+        elif applied:
+            self.info(
+                f"stream_options_applied",
+                include_usage=applied.get("include_usage", False),
+                requested=requested,
+            )
+
+    def log_tools_handling(
+        self,
+        tools_count: int,
+        tool_choice: str | dict | None,
+        tools_preview: list[str] | None = None,
+    ) -> None:
+        """Log tools/tool_choice parameter handling."""
+        self.info(
+            f"tools_handling",
+            tools_count=tools_count,
+            tool_choice=tool_choice,
+            tool_names=tools_preview[:5] if tools_preview else [],
+        )
+
+    def log_upstream_request(
+        self,
+        adapter: str,
+        model: str,
+        stream: bool,
+        create_kwargs_keys: list[str],
+        extra_body_keys: list[str] | None = None,
+        extra_headers_keys: list[str] | None = None,
+    ) -> None:
+        """Log request sent to upstream provider."""
+        self.info(
+            f"upstream_request",
+            adapter=adapter,
+            model=model,
+            stream=stream,
+            kwargs_keys=create_kwargs_keys,
+            extra_body=extra_body_keys,
+            extra_headers=extra_headers_keys,
+        )
+
+    def log_response_format(
+        self,
+        response_type: str,
+        has_tool_calls: bool,
+        has_reasoning: bool,
+        finish_reason: str = "",
+        content_preview: str = "",
+    ) -> None:
+        """Log response structure analysis."""
+        self.info(
+            f"response_format",
+            type=response_type,
+            tool_calls=has_tool_calls,
+            reasoning=has_reasoning,
+            finish_reason=finish_reason,
+            content_preview=content_preview[:50] if content_preview else "",
+        )
+
+    def log_chunk_format(
+        self,
+        chunk_index: int,
+        has_delta: bool,
+        delta_keys: list[str] | None = None,
+        has_tool_calls_delta: bool = False,
+        has_usage: bool = False,
+    ) -> None:
+        """Log stream chunk format analysis."""
+        self.debug(
+            f"chunk_format",
+            index=chunk_index,
+            has_delta=has_delta,
+            delta_keys=delta_keys,
+            tool_calls_delta=has_tool_calls_delta,
+            has_usage=has_usage,
+        )
+
+    def log_protocol_warning(
+        self,
+        warning_type: str,
+        msg: str,
+        suggestion: str = "",
+    ) -> None:
+        """Log protocol-related warning with suggestion."""
+        self.warning(
+            f"protocol_warning type={warning_type} msg={msg[:200]}",
+            suggestion=suggestion,
+        )
+
+    def log_protocol_error(
+        self,
+        error_type: str,
+        msg: str,
+        raw_data: str = "",
+    ) -> None:
+        """Log protocol-related error with raw data preview."""
+        self.error(
+            f"protocol_error type={error_type} msg={msg[:200]}",
+            raw_preview=raw_data[:200] if raw_data else "",
+        )
+
+    def _preview_params(self, params: dict) -> dict:
+        """Create preview of parameters for logging."""
+        result = {}
+        for k, v in params.items():
+            if isinstance(v, dict):
+                result[k] = f"dict:{len(v)}keys"
+            elif isinstance(v, list):
+                result[k] = f"list:{len(v)}items"
+            elif isinstance(v, str) and len(v) > 50:
+                result[k] = v[:50] + "..."
+            else:
+                result[k] = v
+        return result
+
+
+def get_protocol_logger(request_id: str = "", protocol: str = "openai") -> ProtocolLogger:
+    """Get a protocol logger instance."""
+    return ProtocolLogger(request_id, protocol)
