@@ -1025,7 +1025,11 @@ class TestOpenaiStreamToAnthropic:
 
     @pytest.mark.asyncio
     async def test_reasoning_only_stream_emits_thinking(self):
-        """Stream with only reasoning_content (no content) emits thinking block when thinking_enabled=True."""
+        """Stream with only reasoning_content (no content) emits thinking block when thinking_enabled=True.
+
+        C5 fix: Also emits an empty text block to prevent Anthropic SDK client errors when
+        clients expect at least one text block in every message.
+        """
 
         async def fake_stream():
             yield {
@@ -1050,8 +1054,9 @@ class TestOpenaiStreamToAnthropic:
         text = b"".join(events).decode()
         assert '"type": "thinking"' in text
         assert "Thinking..." in text
-        # No text block should be emitted
-        assert '"type": "text"' not in text
+        # C5 fix: Empty text block should also be emitted to prevent client SDK errors
+        assert '"type": "text"' in text
+        assert '"text": ""' in text
 
     @pytest.mark.asyncio
     async def test_thinking_then_tool_call_indexing(self):
@@ -1104,14 +1109,19 @@ class TestOpenaiStreamToAnthropic:
             events.append(event if isinstance(event, bytes) else event.encode())
 
         text = b"".join(events).decode()
-        # thinking at index 0, tool_use at index 1
+        # C5 fix: thinking at index 0, tool_use at index 1, empty text at index 2
+        # (empty text block added to prevent client SDK errors when no text content)
         lines = [l for l in text.split("\n") if l.startswith("data: ")]
         block_starts = [l for l in lines if "content_block_start" in l]
-        assert len(block_starts) == 2
+        assert len(block_starts) == 3
         assert '"index": 0' in block_starts[0]
         assert '"type": "thinking"' in block_starts[0]
         assert '"index": 1' in block_starts[1]
         assert '"type": "tool_use"' in block_starts[1]
+        # C5 fix: Empty text block at index 2
+        assert '"index": 2' in block_starts[2]
+        assert '"type": "text"' in block_starts[2]
+        assert '"text": ""' in block_starts[2]
 
     @pytest.mark.asyncio
     async def test_thinking_block_without_signature(self):
@@ -1845,7 +1855,10 @@ class TestPreserveThinkingBlocks:
         assert "The answer is 42" in resp["content"][0]["text"]
 
     def test_response_reasoning_only_preserved(self):
-        """When preserve_thinking_blocks=True and only reasoning."""
+        """When preserve_thinking_blocks=True and only reasoning.
+
+        C5 fix: Also emits an empty text block to prevent Anthropic SDK client errors.
+        """
         from app.utils.message_converter import convert_openai_to_anthropic_response
 
         resp = convert_openai_to_anthropic_response(
@@ -1865,6 +1878,10 @@ class TestPreserveThinkingBlocks:
         )
         assert resp["content"][0]["type"] == "thinking"
         assert resp["content"][0]["thinking"] == "Deep thoughts"
+        # C5 fix: Empty text block should also be present
+        assert len(resp["content"]) == 2
+        assert resp["content"][1]["type"] == "text"
+        assert resp["content"][1]["text"] == ""
 
     # ========== Streaming tests ==========
 

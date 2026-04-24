@@ -747,6 +747,9 @@ def convert_openai_to_anthropic_response(
             # Only reasoning content, no text (must be non-empty)
             if emit_separate_thinking:
                 content.append({"type": "thinking", "thinking": reasoning})
+                # C5 fix: 有 thinking 块但没有 text 块时，补充空 text 块
+                # 防止某些 Anthropic SDK 客户端期望至少有一个 text 块时报错
+                content.append({"type": "text", "text": ""})
             else:
                 content.append({"type": "text", "text": reasoning})
 
@@ -1150,6 +1153,8 @@ async def openai_stream_to_anthropic(
 
         if sent_message_start:
             # C4 fix: 如果没有任何块被打开，合成一个空 text 块保证协议合规
+            # C5 fix: 如果只有 thinking 块被打开但没有 text 块，也合成一个空 text 块
+            # 防止客户端 SDK 在处理只有 thinking 块的响应时尝试访问 .text 属性报错
             if next_block_index == 0:
                 yield _sse(
                     "content_block_start",
@@ -1161,6 +1166,21 @@ async def openai_stream_to_anthropic(
                 )
                 yield _sse(
                     "content_block_stop", {"type": "content_block_stop", "index": 0}
+                )
+            elif thinking_block_opened and not text_block_opened:
+                # 有 thinking 块但没有 text 块 - 补一个空 text 块防止客户端报错
+                # 某些 Anthropic SDK 客户端期望每个消息至少有一个 text 块
+                block_idx = next_block_index
+                yield _sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": block_idx,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                )
+                yield _sse(
+                    "content_block_stop", {"type": "content_block_stop", "index": block_idx}
                 )
 
             yield _sse(
