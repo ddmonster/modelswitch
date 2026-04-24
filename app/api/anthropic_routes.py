@@ -51,8 +51,12 @@ async def messages(request: Request):
     thinking = body.get("thinking")
     thinking_enabled = isinstance(thinking, dict) and thinking.get("type") == "enabled"
 
+    # NEW: preserve_thinking_blocks - preserve thinking blocks as separate content
+    # when client explicitly requests thinking
+    preserve_thinking_blocks = thinking_enabled
+
     # 将 Anthropic 请求转换为 OpenAI 格式
-    openai_body = anthropic_to_openai_messages(body)
+    openai_body = anthropic_to_openai_messages(body, preserve_thinking_blocks=preserve_thinking_blocks)
     messages_list = openai_body.pop("messages", [])
 
     kwargs = {
@@ -72,6 +76,7 @@ async def messages(request: Request):
             request_id,
             kwargs,
             thinking_enabled=thinking_enabled,
+            preserve_thinking_blocks=preserve_thinking_blocks,
         )
     else:
         return await _handle_non_stream(
@@ -82,6 +87,7 @@ async def messages(request: Request):
             request_id,
             kwargs,
             thinking_enabled=thinking_enabled,
+            preserve_thinking_blocks=preserve_thinking_blocks,
         )
 
 
@@ -93,6 +99,7 @@ async def _handle_non_stream(
     request_id,
     kwargs,
     thinking_enabled=False,
+    preserve_thinking_blocks=False,
 ):
     """处理非流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -125,9 +132,9 @@ async def _handle_non_stream(
     else:
         resp_data = resp
 
-    # C2/C3 fix: 传入 thinking_enabled，控制是否生成 thinking 块
+    # C2/C3 fix: 传入 thinking_enabled 和 preserve_thinking_blocks
     anthropic_response = convert_openai_to_anthropic_response(
-        resp_data, model, thinking_enabled=thinking_enabled
+        resp_data, model, thinking_enabled=thinking_enabled, preserve_thinking_blocks=preserve_thinking_blocks
     )
 
     adapter_name = (result.adapter_name or "").encode("latin-1", errors="replace").decode("latin-1")
@@ -148,6 +155,7 @@ async def _handle_stream(
     request_id,
     kwargs,
     thinking_enabled=False,
+    preserve_thinking_blocks=False,
 ):
     """处理流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -203,12 +211,13 @@ async def _handle_stream(
                 yield chunk
 
         try:
-            # C2 fix: 传入 thinking_enabled，控制是否生成 thinking 块
+            # C2 fix: 传入 thinking_enabled 和 preserve_thinking_blocks
             async for anth_chunk in openai_stream_to_anthropic(
                 capturing_stream(safe_stream(result.stream)),
                 model,
                 request_id,
                 thinking_enabled=thinking_enabled,
+                preserve_thinking_blocks=preserve_thinking_blocks,
             ):
                 yield anth_chunk
 

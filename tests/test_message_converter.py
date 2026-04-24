@@ -1487,3 +1487,196 @@ class TestCacheTokenMapping:
         )
         assert resp["usage"]["cache_read_input_tokens"] == 60
         assert resp["usage"]["cache_creation_input_tokens"] == 20
+
+
+class TestPreserveThinkingBlocks:
+    """Tests for preserve_thinking_blocks feature."""
+
+    # ========== Request conversion tests ==========
+
+    def test_assistant_thinking_preserved_in_request(self):
+        """When preserve_thinking_blocks=True, thinking should be emitted as reasoning_content."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Let me reason..."},
+                            {"type": "text", "text": "The answer is 42"},
+                        ],
+                    }
+                ],
+                "thinking": {"type": "enabled"},
+            },
+            preserve_thinking_blocks=True,
+        )
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["reasoning_content"] == "Let me reason..."
+        assert msg["content"] == "The answer is 42"
+
+    def test_assistant_thinking_preserved_backward_compatible(self):
+        """When preserve_thinking_blocks=False (default), thinking should be merged into text."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Let me reason..."},
+                            {"type": "text", "text": "The answer is 42"},
+                        ],
+                    }
+                ],
+            },
+            preserve_thinking_blocks=False,
+        )
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        # thinking should be merged into content
+        assert "Let me reason" in msg["content"]
+        assert "The answer is 42" in msg["content"]
+        assert "reasoning_content" not in msg
+
+    def test_assistant_thinking_only_preserved(self):
+        """When preserve_thinking_blocks=True and only thinking content."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Just thinking..."},
+                        ],
+                    }
+                ],
+                "thinking": {"type": "enabled"},
+            },
+            preserve_thinking_blocks=True,
+        )
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["reasoning_content"] == "Just thinking..."
+        assert msg["content"] is None
+
+    # ========== Response conversion tests ==========
+
+    def test_response_thinking_preserved_with_flag(self):
+        """When preserve_thinking_blocks=True, reasoning should be separate thinking block."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "The answer is 42",
+                            "reasoning_content": "Let me think...",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            },
+            "test",
+            preserve_thinking_blocks=True,
+        )
+        # Should have thinking block first, then text block
+        assert resp["content"][0]["type"] == "thinking"
+        assert resp["content"][0]["thinking"] == "Let me think..."
+        assert resp["content"][1]["type"] == "text"
+        assert resp["content"][1]["text"] == "The answer is 42"
+
+    def test_response_thinking_preserved_backward_compatible(self):
+        """When preserve_thinking_blocks=False, reasoning should be merged into text."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "The answer is 42",
+                            "reasoning_content": "Let me think...",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            },
+            "test",
+            preserve_thinking_blocks=False,
+        )
+        # Should have single text block with merged content
+        assert len(resp["content"]) == 1
+        assert resp["content"][0]["type"] == "text"
+        assert "Let me think..." in resp["content"][0]["text"]
+        assert "The answer is 42" in resp["content"][0]["text"]
+
+    def test_response_reasoning_only_preserved(self):
+        """When preserve_thinking_blocks=True and only reasoning."""
+        from app.utils.message_converter import convert_openai_to_anthropic_response
+
+        resp = convert_openai_to_anthropic_response(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "reasoning_content": "Deep thoughts",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            "test",
+            preserve_thinking_blocks=True,
+        )
+        assert resp["content"][0]["type"] == "thinking"
+        assert resp["content"][0]["thinking"] == "Deep thoughts"
+
+    # ========== Streaming tests ==========
+
+    @pytest.mark.asyncio
+    async def test_stream_thinking_preserved(self):
+        """When preserve_thinking_blocks=True, reasoning should emit thinking_delta."""
+        async def fake_stream():
+            yield {"choices": [{"delta": {"reasoning_content": "Thinking..."}}]}
+            yield {"choices": [{"delta": {"content": "Answer"}}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(
+            fake_stream(), "m", preserve_thinking_blocks=True
+        ):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        # Should have thinking block and text block
+        assert '"type": "thinking"' in text
+        assert '"type": "thinking_delta"' in text
+        assert '"type": "text"' in text
+        assert '"type": "text_delta"' in text
+
+    @pytest.mark.asyncio
+    async def test_stream_thinking_preserved_backward_compatible(self):
+        """When preserve_thinking_blocks=False, reasoning should be merged into content."""
+        async def fake_stream():
+            yield {"choices": [{"delta": {"reasoning_content": "Thinking..."}}]}
+            yield {"choices": [{"delta": {"content": "Answer"}}]}
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(
+            fake_stream(), "m", preserve_thinking_blocks=False
+        ):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        # Should NOT have thinking block - reasoning merged into text
+        assert '"type": "thinking"' not in text
+        assert '"type": "thinking_delta"' not in text
+        # Text should contain both reasoning and content
+        assert "Thinking..." in text
+        assert "Answer" in text

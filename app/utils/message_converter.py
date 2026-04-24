@@ -181,8 +181,16 @@ def clean_json_schema(schema: dict) -> dict:
     return result
 
 
-def anthropic_to_openai_messages(data: dict) -> dict:
+def anthropic_to_openai_messages(
+    data: dict,
+    preserve_thinking_blocks: bool = False,
+) -> dict:
     """将 Anthropic Messages API 请求体转换为 OpenAI 格式
+
+    Args:
+        data: Anthropic request body dict
+        preserve_thinking_blocks: If True, preserve thinking blocks as separate
+            reasoning_content instead of merging into text. Derived from thinking.type==enabled.
 
     Features:
     - Preserves cache_control markers for prompt caching
@@ -215,7 +223,7 @@ def anthropic_to_openai_messages(data: dict) -> dict:
             messages.extend(converted)
             messages.extend(tool_results)
         elif role == "assistant":
-            messages.append(_convert_assistant_content(content))
+            messages.append(_convert_assistant_content(content, preserve_thinking_blocks))
 
     return _build_openai_request_dict(data, model, messages, openai_tools, openai_tool_choice)
 
@@ -420,11 +428,16 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
     return converted, tool_results
 
 
-def _convert_assistant_content(content: str | list) -> dict:
+def _convert_assistant_content(
+    content: str | list,
+    preserve_thinking_blocks: bool = False,
+) -> dict:
     """Convert Anthropic assistant message content.
 
     Args:
         content: Assistant message content (string or list of blocks)
+        preserve_thinking_blocks: If True, preserve thinking blocks as separate
+            reasoning_content instead of merging into text.
 
     Returns:
         OpenAI assistant message dict
@@ -447,12 +460,53 @@ def _convert_assistant_content(content: str | list) -> dict:
             if block.get("cache_control"):
                 has_cache_control = True
         elif block.get("type") == "thinking":
-            # Merge thinking into text for history preservation
             thinking_parts.append(block.get("thinking", ""))
             if block.get("cache_control"):
                 has_cache_control = True
 
-    # Combine thinking and text parts
+    # NEW: If preserve_thinking_blocks and we have thinking, emit reasoning_content separately
+    if preserve_thinking_blocks and thinking_parts:
+        combined_thinking = " ".join(thinking_parts)
+        combined_text = " ".join(text_parts) if text_parts else None
+
+        if tool_use_blocks:
+            tool_calls = []
+            for b in tool_use_blocks:
+                if not isinstance(b, dict):
+                    logger.warning(f"Invalid tool_use block type: {type(b).__name__}, expected dict")
+                    continue
+
+                tool_id = b.get("id")
+                if not tool_id:
+                    tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                    logger.debug(f"tool_use block missing 'id', generated: {tool_id}")
+
+                tool_name = b.get("name", "")
+                tool_input = b.get("input", {})
+
+                tool_calls.append({
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(tool_input, ensure_ascii=False),
+                    },
+                })
+
+            msg = {"role": "assistant", "tool_calls": tool_calls}
+            msg["content"] = combined_text
+            msg["reasoning_content"] = combined_thinking
+            return msg
+        else:
+            msg = {"role": "assistant"}
+            if combined_text:
+                msg["content"] = combined_text
+            else:
+                msg["content"] = None
+            msg["reasoning_content"] = combined_thinking
+            return msg
+
+    # Backward compatible: merge thinking into text
     all_text_parts = thinking_parts + text_parts
     combined_text = " ".join(all_text_parts) if all_text_parts else None
 
@@ -553,7 +607,10 @@ def _build_openai_request_dict(
 
 
 def convert_openai_to_anthropic_response(
-    resp_data: dict, model: str, thinking_enabled: bool = False
+    resp_data: dict,
+    model: str,
+    thinking_enabled: bool = False,
+    preserve_thinking_blocks: bool = False,
 ) -> dict:
     """将 OpenAI ChatCompletion 响应转换为 Anthropic Messages 响应。
 
@@ -561,6 +618,8 @@ def convert_openai_to_anthropic_response(
         resp_data: OpenAI 格式的响应 dict
         model: 模型名称
         thinking_enabled: 客户端是否请求了 thinking（决定是否生成 thinking 块）
+        preserve_thinking_blocks: If True, preserve reasoning_content as separate thinking
+            block instead of merging into text.
 
     Features:
     - Handles refusal blocks (both content parts and message-level)
@@ -573,6 +632,9 @@ def convert_openai_to_anthropic_response(
     stop_reason = "end_turn"
     has_tool_use = False
 
+    # Determine if to preserve thinking as separate block
+    emit_separate_thinking = thinking_enabled or preserve_thinking_blocks
+
     if choices:
         choice = choices[0]
         message = choice.get("message", {})
@@ -583,13 +645,16 @@ def convert_openai_to_anthropic_response(
         # Handle content (string, array, or None)
         if msg_content:
             if isinstance(msg_content, str):
-                text_to_emit = msg_content
-                if not thinking_enabled and reasoning:
-                    text_to_emit = reasoning + msg_content
-                if thinking_enabled and reasoning:
+                if emit_separate_thinking and reasoning:
+                    # Preserve thinking as separate block
                     content.append({"type": "thinking", "thinking": reasoning})
-                if text_to_emit:
-                    content.append({"type": "text", "text": text_to_emit})
+                    if msg_content:
+                        content.append({"type": "text", "text": msg_content})
+                elif reasoning:
+                    # Merge for backward compatibility
+                    content.append({"type": "text", "text": reasoning + msg_content})
+                else:
+                    content.append({"type": "text", "text": msg_content})
             elif isinstance(msg_content, list):
                 # Content parts array - handle text, output_text, and refusal
                 for part in msg_content:
@@ -602,9 +667,20 @@ def convert_openai_to_anthropic_response(
                         refusal = part.get("refusal", "")
                         if refusal:
                             content.append({"type": "text", "text": refusal})
+                # Add thinking block if preserving
+                if emit_separate_thinking and reasoning:
+                    # Insert thinking at beginning
+                    content.insert(0, {"type": "thinking", "thinking": reasoning})
+                elif reasoning:
+                    # Merge: prepend to first text block
+                    text_blocks = [b for b in content if b["type"] == "text"]
+                    if text_blocks:
+                        text_blocks[0]["text"] = reasoning + text_blocks[0]["text"]
+                    else:
+                        content.append({"type": "text", "text": reasoning})
         elif reasoning:
             # Only reasoning content, no text
-            if thinking_enabled:
+            if emit_separate_thinking:
                 content.append({"type": "thinking", "thinking": reasoning})
             else:
                 content.append({"type": "text", "text": reasoning})
@@ -729,6 +805,7 @@ async def openai_stream_to_anthropic(
     model: str,
     request_id: str = "",
     thinking_enabled: bool = False,
+    preserve_thinking_blocks: bool = False,
 ) -> AsyncGenerator[bytes, None]:
     """将 OpenAI 格式的 SSE 流实时转换为 Anthropic 格式。
 
@@ -738,6 +815,8 @@ async def openai_stream_to_anthropic(
         request_id: 请求 ID
         thinking_enabled: 客户端是否请求了 thinking。
             False 时，reasoning_content 会被合并到 text 块中，不生成 thinking 块。
+        preserve_thinking_blocks: If True, preserve reasoning_content as separate thinking
+            block instead of merging into text.
 
     状态机: message_start -> [content_block_start -> delta* -> stop]* -> message_delta -> message_stop
 
@@ -753,6 +832,9 @@ async def openai_stream_to_anthropic(
     sent_message_start = False
     total_output_tokens = 0
     finish_reason = "end_turn"
+
+    # Determine if to preserve thinking as separate block
+    emit_separate_thinking = thinking_enabled or preserve_thinking_blocks
 
     # H1 fix: 用递增计数器代替计算式索引
     next_block_index = 0  # 下一个可用的块索引
@@ -787,8 +869,8 @@ async def openai_stream_to_anthropic(
             reasoning_content = delta.get("reasoning_content")
             finish = choices[0].get("finish_reason")
 
-            # C2 fix: thinking 未启用时，将 reasoning_content 合并到 content
-            if reasoning_content is not None and not thinking_enabled:
+            # C2 fix: thinking 未启用且未preserve时，将 reasoning_content 合并到 content
+            if reasoning_content is not None and not emit_separate_thinking:
                 if content is None:
                     content = reasoning_content
                 else:
@@ -907,7 +989,7 @@ async def openai_stream_to_anthropic(
             # Handle signature_delta for thinking blocks (some providers send this)
             # OpenAI reasoning models don't send signatures, but Anthropic-native providers do
             signature_delta = delta.get("signature")
-            if signature_delta is not None and thinking_block_opened and thinking_enabled:
+            if signature_delta is not None and thinking_block_opened and emit_separate_thinking:
                 yield _sse(
                     "content_block_delta",
                     {
