@@ -33,6 +33,41 @@ _OPENAI_STANDARD_PARAMS = {
     "user",
 }
 
+# Provider-specific message field handling
+# Some providers don't support reasoning_content in request messages
+_UNSUPPORTED_MESSAGE_FIELDS = {
+    # reasoning_content is only supported by certain providers (DeepSeek, OpenAI o-series)
+    # vLLM and most OpenAI-compatible providers don't support it
+    "reasoning_content",
+}
+
+
+def _filter_message_fields(messages: list, provider_name: str) -> list:
+    """Filter unsupported fields from messages for provider compatibility.
+
+    Some providers (vLLM, GLM, etc.) don't recognize fields like reasoning_content
+    and may reject requests or misinterpret them.
+
+    Args:
+        messages: List of message dicts
+        provider_name: Provider name for logging
+
+    Returns:
+        Filtered messages list
+    """
+    filtered = []
+    for msg in messages:
+        filtered_msg = {}
+        for key, value in msg.items():
+            if key in _UNSUPPORTED_MESSAGE_FIELDS:
+                logger.debug(
+                    f"Filtering unsupported field '{key}' from message for provider {provider_name}"
+                )
+                continue
+            filtered_msg[key] = value
+        filtered.append(filtered_msg)
+    return filtered
+
 
 def _make_reasoning_chunk(ref_chunk, model: str, reasoning_text: str):
     """构造一个包含完整推理内容的合成流式 chunk（dict 格式）"""
@@ -231,6 +266,10 @@ class OpenAIAdapter(BaseAdapter):
         # 创建协议日志器
         protocol_logger = get_protocol_logger(request_id, "openai")
 
+        # Filter unsupported fields from messages for provider compatibility
+        # reasoning_content is not recognized by most OpenAI-compatible providers
+        filtered_messages = _filter_message_fields(messages, self.name)
+
         # Separate standard params from extension params
         standard_params: dict[str, Any] = {}
         extra_body: dict[str, Any] = {}
@@ -242,7 +281,7 @@ class OpenAIAdapter(BaseAdapter):
 
         create_kwargs: dict[str, Any] = {
             "model": model_name,
-            "messages": messages,
+            "messages": filtered_messages,
             "stream": stream,
             "timeout": timeout,
             **standard_params,
