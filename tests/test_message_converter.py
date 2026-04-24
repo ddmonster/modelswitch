@@ -137,6 +137,62 @@ class TestAnthropicToOpenaiMessages:
         assert msgs[0]["content"] == "Hello"
         assert msgs[0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_user_multiple_text_blocks_joined_to_string(self):
+        """Multiple text blocks (no images) should be joined into string for provider compatibility.
+
+        Some providers (GLM/BigModel) don't support array content format and return
+        INVALID_ARGUMENT: content is not repeating, cannot start list.
+
+        This fix ensures multiple text-only blocks are joined into a single string.
+        """
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Part one"},
+                            {"type": "text", "text": "Part two"},
+                            {"type": "text", "text": "Part three"},
+                        ],
+                    }
+                ],
+            }
+        )
+        msgs = result["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        # Content should be a string, not a list
+        assert isinstance(msgs[0]["content"], str)
+        # All text parts should be joined with spaces
+        assert msgs[0]["content"] == "Part one Part two Part three"
+
+    def test_user_multiple_text_blocks_with_cache_control_preserved(self):
+        """Multiple text blocks with cache_control should preserve marker from first block."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "First",
+                                "cache_control": {"type": "ephemeral"},
+                            },
+                            {"type": "text", "text": "Second"},
+                        ],
+                    }
+                ],
+            }
+        )
+        msgs = result["messages"]
+        assert len(msgs) == 1
+        assert isinstance(msgs[0]["content"], str)
+        assert msgs[0]["content"] == "First Second"
+        # cache_control from first block should be preserved
+        assert msgs[0]["cache_control"] == {"type": "ephemeral"}
+
     def test_assistant_string_content(self):
         result = anthropic_to_openai_messages(
             {
