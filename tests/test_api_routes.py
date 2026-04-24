@@ -1214,9 +1214,12 @@ class TestAnthropicMessages:
             )
             assert resp.status_code == 200
             data = resp.json()
+            # C5 fix: empty text block inserted before tool_use for protocol compliance
+            assert data["content"][0]["type"] == "text"
+            assert data["content"][0]["text"] == ""
             # The tool_use should have empty input due to JSONDecodeError
-            assert data["content"][0]["type"] == "tool_use"
-            assert data["content"][0]["input"] == {}  # Empty dict due to invalid JSON
+            assert data["content"][1]["type"] == "tool_use"
+            assert data["content"][1]["input"] == {}  # Empty dict due to invalid JSON
 
     @pytest.mark.asyncio
     async def test_stream_dict_chunks(self, client, sample_config):

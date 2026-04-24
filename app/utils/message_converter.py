@@ -762,6 +762,22 @@ def convert_openai_to_anthropic_response(
         tool_calls = message.get("tool_calls", [])
         if tool_calls:
             has_tool_use = True
+            # C5 fix: If we have tool_calls but no text block yet, insert empty text block
+            # BEFORE tool_use for Anthropic protocol compliance
+            # (Anthropic expects: thinking -> text -> tool_use order)
+            has_text_block = any(b.get("type") == "text" for b in content)
+            if not has_text_block:
+                # Insert empty text block at the appropriate position
+                # If we have thinking blocks, insert after them; otherwise at start
+                thinking_blocks = [b for b in content if b.get("type") == "thinking"]
+                if thinking_blocks:
+                    # Insert after thinking blocks
+                    insert_idx = len(thinking_blocks)
+                else:
+                    # Insert at start
+                    insert_idx = 0
+                content.insert(insert_idx, {"type": "text", "text": ""})
+
             for tc in tool_calls:
                 tc_func = tc.get("function", {})
                 tc_args = tc_func.get("arguments", "{}")
@@ -787,6 +803,13 @@ def convert_openai_to_anthropic_response(
                 fc_args = function_call.get("arguments")
                 fc_id = function_call.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
                 if fc_name or fc_args:
+                    # C5 fix: Ensure text block exists before tool_use
+                    has_text_block = any(b.get("type") == "text" for b in content)
+                    if not has_text_block:
+                        thinking_blocks = [b for b in content if b.get("type") == "thinking"]
+                        insert_idx = len(thinking_blocks) if thinking_blocks else 0
+                        content.insert(insert_idx, {"type": "text", "text": ""})
+
                     fc_input = _safe_json_parse(
                         fc_args if isinstance(fc_args, str) else "{}",
                         default={},
@@ -986,10 +1009,12 @@ async def openai_stream_to_anthropic(
                         if close_ev:
                             yield close_ev
 
-                        # C5 fix: If thinking block opened but no text block,
-                        # insert empty text block BEFORE tool_use for protocol compliance
+                        # C5 fix: Insert empty text block BEFORE first tool_use for protocol compliance
                         # (Anthropic expects: thinking -> text -> tool_use order)
-                        if thinking_block_opened and not text_block_opened and not tool_calls_map:
+                        # This handles two cases:
+                        # 1. thinking_block_opened but no text_block -> insert text after thinking
+                        # 2. no thinking and no text -> insert text at start before tool_use
+                        if not text_block_opened and not tool_calls_map:
                             text_block_idx = next_block_index
                             next_block_index += 1
                             yield _sse(

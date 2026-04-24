@@ -1683,9 +1683,11 @@ class TestLegacyFunctionCall:
             },
             "test",
         )
-        assert resp["content"][0]["type"] == "tool_use"
-        assert resp["content"][0]["name"] == "get_weather"
-        assert resp["content"][0]["input"]["city"] == "Tokyo"
+        assert resp["content"][0]["type"] == "text"  # C5 fix: empty text block before tool_use
+        assert resp["content"][0]["text"] == ""
+        assert resp["content"][1]["type"] == "tool_use"  # C5 fix: tool_use at index 1
+        assert resp["content"][1]["name"] == "get_weather"
+        assert resp["content"][1]["input"]["city"] == "Tokyo"
         assert resp["stop_reason"] == "tool_use"
 
 
