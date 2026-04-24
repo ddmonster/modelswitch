@@ -986,6 +986,26 @@ async def openai_stream_to_anthropic(
                         if close_ev:
                             yield close_ev
 
+                        # C5 fix: If thinking block opened but no text block,
+                        # insert empty text block BEFORE tool_use for protocol compliance
+                        # (Anthropic expects: thinking -> text -> tool_use order)
+                        if thinking_block_opened and not text_block_opened and not tool_calls_map:
+                            text_block_idx = next_block_index
+                            next_block_index += 1
+                            yield _sse(
+                                "content_block_start",
+                                {
+                                    "type": "content_block_start",
+                                    "index": text_block_idx,
+                                    "content_block": {"type": "text", "text": ""},
+                                },
+                            )
+                            yield _sse(
+                                "content_block_stop",
+                                {"type": "content_block_stop", "index": text_block_idx},
+                            )
+                            text_block_opened = True  # Mark as opened
+
                         # H1 fix: 使用 next_block_index 而非计算式
                         block_idx = next_block_index
                         next_block_index += 1

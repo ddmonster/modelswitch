@@ -1109,19 +1109,21 @@ class TestOpenaiStreamToAnthropic:
             events.append(event if isinstance(event, bytes) else event.encode())
 
         text = b"".join(events).decode()
-        # C5 fix: thinking at index 0, tool_use at index 1, empty text at index 2
-        # (empty text block added to prevent client SDK errors when no text content)
+        # C5 fix: thinking(0) + empty_text(1) + tool_use(2)
+        # Empty text block inserted BEFORE tool_use for Anthropic protocol compliance
+        # (Anthropic expects: thinking -> text -> tool_use order)
         lines = [l for l in text.split("\n") if l.startswith("data: ")]
         block_starts = [l for l in lines if "content_block_start" in l]
         assert len(block_starts) == 3
         assert '"index": 0' in block_starts[0]
         assert '"type": "thinking"' in block_starts[0]
+        # C5 fix: Empty text block at index 1 (before tool_use)
         assert '"index": 1' in block_starts[1]
-        assert '"type": "tool_use"' in block_starts[1]
-        # C5 fix: Empty text block at index 2
+        assert '"type": "text"' in block_starts[1]
+        assert '"text": ""' in block_starts[1]
+        # tool_use at index 2 (after empty text)
         assert '"index": 2' in block_starts[2]
-        assert '"type": "text"' in block_starts[2]
-        assert '"text": ""' in block_starts[2]
+        assert '"type": "tool_use"' in block_starts[2]
 
     @pytest.mark.asyncio
     async def test_thinking_block_without_signature(self):
