@@ -397,13 +397,24 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
         # Simplify: if only single text block (no images), use string content
         # Some OpenAI-compatible providers (GLM/BigModel) don't support array content
         if converted:
+            has_images = any(b.get("type") == "image_url" for b in converted)
             if len(converted) == 1 and converted[0].get("type") == "text":
                 text_content = converted[0].get("text", "")
                 user_msg = {"role": "user", "content": text_content}
                 if converted[0].get("cache_control"):
                     user_msg["cache_control"] = converted[0]["cache_control"]
                 converted = [user_msg]
+            elif not has_images:
+                # Multiple text blocks only: join into single string for provider compatibility
+                all_text = " ".join(b.get("text", "") for b in converted if b.get("type") == "text")
+                user_msg = {"role": "user", "content": all_text}
+                # Preserve cache_control from first block if any
+                first_text = next((b for b in converted if b.get("type") == "text"), None)
+                if first_text and first_text.get("cache_control"):
+                    user_msg["cache_control"] = first_text["cache_control"]
+                converted = [user_msg]
             else:
+                # Has images: use array content format (required for multi-modal)
                 converted = [{"role": "user", "content": converted}]
 
     return converted, tool_results
