@@ -275,7 +275,7 @@ class ChainRouter:
                         f"[{request_id}] adapter={ref.adapter} FAIL "
                         f"status={result.status_code}, retrying..."
                     )
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)  # 100ms retry delay (reduced from 500ms for faster fallback)
                 else:
                     last_error = result.error or f"HTTP {result.status_code}"
                     logger.debug(

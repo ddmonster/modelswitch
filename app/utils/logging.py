@@ -261,15 +261,25 @@ class AdapterLogger:
             if v is not None:
                 full_msg += f" {k}={v}"
         self._logger.log(level, full_msg, extra=extra)
-        # Only add to buffer for info/warning/error levels (skip debug)
+        # Only add to buffer for warning/error levels (skip debug/info)
+        # INFO logs are frequent - skip caller location for performance
         # Debug logs are too verbose for in-memory buffer and journalctl
-        if level >= logging.INFO:
-            location = _get_caller_location(skip_frames=3)  # Skip _log -> debug/info/warning/error -> actual caller
+        if level >= logging.WARNING:
+            location = _get_caller_location(skip_frames=3)  # Skip _log -> warning/error -> actual caller
             add_log_to_buffer(
                 self.request_id,
                 logging.getLevelName(level),
                 full_msg,
                 location=location,
+                api_key=context.get("api_key", ""),
+            )
+        elif level >= logging.INFO:
+            # INFO level - no caller location (performance optimization)
+            add_log_to_buffer(
+                self.request_id,
+                logging.getLevelName(level),
+                full_msg,
+                location="",  # Skip expensive inspect.stack() call
                 api_key=context.get("api_key", ""),
             )
 

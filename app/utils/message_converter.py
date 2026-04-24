@@ -234,10 +234,10 @@ def anthropic_to_openai_messages(
             content_preview = msg.get("content", "")[:50]
         elif isinstance(msg.get("content"), list):
             content_preview = f"[list of {len(msg['content'])} items]"
-            # Warning: content as list may not be supported by all providers
-            logger.warning(
+            # Debug log for list content (changed from WARNING to DEBUG for performance)
+            logger.debug(
                 f"[message conversion] messages[{i}] has content as LIST - "
-                f"provider compatibility issue! role={msg.get('role')}, "
+                f"role={msg.get('role')}, "
                 f"content_types={[b.get('type') for b in msg['content']]}"
             )
         logger.debug(
@@ -824,9 +824,18 @@ def _sse(event_type: str, data: dict) -> bytes:
 
 
 def _to_dict(obj):
-    """深度转换对象为 dict，处理 Pydantic 模型嵌套未完全序列化的情况（如 BigModel SDK 的 ChoiceDelta）"""
+    """深度转换对象为 dict，处理 Pydantic 模型嵌套未完全序列化的情况（如 BigModel SDK 的 ChoiceDelta）
+
+    Performance optimization: Skip conversion if already dict with primitive values.
+    """
     if isinstance(obj, dict):
-        return {k: _to_dict(v) for k, v in obj.items()}
+        # Quick check: if all values are primitives, return directly
+        for v in obj.values():
+            if isinstance(v, (dict, list)) or hasattr(v, "model_dump") or hasattr(v, "to_dict"):
+                # Has nested objects, need recursive conversion
+                return {k: _to_dict(v) for k, v in obj.items()}
+        # All primitives, return directly
+        return obj
     if isinstance(obj, list):
         return [_to_dict(v) for v in obj]
     if hasattr(obj, "model_dump"):
