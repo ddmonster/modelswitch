@@ -223,7 +223,29 @@ def anthropic_to_openai_messages(
             messages.extend(converted)
             messages.extend(tool_results)
         elif role == "assistant":
-            messages.append(_convert_assistant_content(content, preserve_thinking_blocks))
+            converted_msg = _convert_assistant_content(content, preserve_thinking_blocks)
+            messages.append(converted_msg)
+
+    # Debug: log the converted messages structure
+    for i, msg in enumerate(messages):
+        content_type = type(msg.get("content")).__name__
+        content_preview = None
+        if isinstance(msg.get("content"), str):
+            content_preview = msg.get("content", "")[:50]
+        elif isinstance(msg.get("content"), list):
+            content_preview = f"[list of {len(msg['content'])} items]"
+            # Warning: content as list may not be supported by all providers
+            logger.warning(
+                f"[message conversion] messages[{i}] has content as LIST - "
+                f"provider compatibility issue! role={msg.get('role')}, "
+                f"content_types={[b.get('type') for b in msg['content']]}"
+            )
+        logger.debug(
+            f"[message conversion] index={i}, role={msg.get('role')}, "
+            f"content_type={content_type}, content_preview={content_preview}, "
+            f"has_tool_calls={bool(msg.get('tool_calls'))}, "
+            f"has_reasoning_content={bool(msg.get('reasoning_content'))}"
+        )
 
     return _build_openai_request_dict(data, model, messages, openai_tools, openai_tool_choice)
 
@@ -452,17 +474,31 @@ def _convert_assistant_content(
     text_parts = []
     thinking_parts = []
     tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+    # Also collect tool_result blocks (should not appear in assistant, but check anyway)
     has_cache_control = False
 
     for block in content:
-        if block.get("type") == "text":
+        block_type = block.get("type", "")
+        if block_type == "text":
             text_parts.append(block.get("text", ""))
             if block.get("cache_control"):
                 has_cache_control = True
-        elif block.get("type") == "thinking":
+        elif block_type == "thinking":
             thinking_parts.append(block.get("thinking", ""))
             if block.get("cache_control"):
                 has_cache_control = True
+        elif block_type == "tool_use":
+            # Already collected above
+            pass
+        else:
+            logger.warning(f"[assistant] Unexpected block type '{block_type}' in content list, skipping")
+
+    # Debug log the conversion
+    logger.debug(
+        f"[assistant conversion] preserve_thinking={preserve_thinking_blocks}, "
+        f"text_parts={len(text_parts)}, thinking_parts={len(thinking_parts)}, "
+        f"tool_use_blocks={len(tool_use_blocks)}"
+    )
 
     # NEW: If preserve_thinking_blocks and we have thinking, emit reasoning_content separately
     if preserve_thinking_blocks and thinking_parts:
