@@ -1126,6 +1126,59 @@ class TestOpenaiStreamToAnthropic:
         assert '"type": "tool_use"' in block_starts[2]
 
     @pytest.mark.asyncio
+    async def test_tool_use_only_without_text(self):
+        """C5 fix: tool_use without thinking or text needs empty text block inserted."""
+
+        async def fake_stream():
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "search", "arguments": ""},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {"index": 0, "function": {"arguments": '{"q":"test"}'}}
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(
+            fake_stream(), "m", thinking_enabled=False
+        ):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        lines = [l for l in text.split("\n") if l.startswith("data: ")]
+        block_starts = [l for l in lines if "content_block_start" in l]
+        # C5 fix: empty text(0) + tool_use(1)
+        assert len(block_starts) == 2
+        assert '"index": 0' in block_starts[0]
+        assert '"type": "text"' in block_starts[0]
+        assert '"text": ""' in block_starts[0]
+        assert '"index": 1' in block_starts[1]
+        assert '"type": "tool_use"' in block_starts[1]
+
+    @pytest.mark.asyncio
     async def test_thinking_block_without_signature(self):
         """P9 fix: thinking block from OpenAI provider should not have signature field."""
         async def fake_stream():
