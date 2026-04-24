@@ -13,6 +13,7 @@ from app.utils.message_converter import (
     convert_openai_to_anthropic_response,
     openai_stream_to_anthropic,
 )
+from app.utils.logging import get_protocol_logger
 from app.utils.tracking import track_request, StreamAccumulator
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ async def messages(request: Request):
     body = await request.json()
     model = body.get("model", "")
     stream = body.get("stream", False)
+
+    # Create protocol logger for Anthropic flow debug logging
+    proto_logger = get_protocol_logger(request_id, protocol="anthropic")
+    proto_logger.log_anthropic_request(body, model, stream)
 
     # 模型权限检查
     api_key_config = getattr(request.state, "api_key_config", None)
@@ -59,6 +64,9 @@ async def messages(request: Request):
     openai_body = anthropic_to_openai_messages(body, preserve_thinking_blocks=preserve_thinking_blocks)
     messages_list = openai_body.pop("messages", [])
 
+    # Log converted OpenAI request for debug
+    proto_logger.log_openai_request(openai_body)
+
     kwargs = {
         k: v
         for k, v in openai_body.items()
@@ -77,6 +85,7 @@ async def messages(request: Request):
             kwargs,
             thinking_enabled=thinking_enabled,
             preserve_thinking_blocks=preserve_thinking_blocks,
+            proto_logger=proto_logger,
         )
     else:
         return await _handle_non_stream(
@@ -88,6 +97,7 @@ async def messages(request: Request):
             kwargs,
             thinking_enabled=thinking_enabled,
             preserve_thinking_blocks=preserve_thinking_blocks,
+            proto_logger=proto_logger,
         )
 
 
@@ -100,6 +110,7 @@ async def _handle_non_stream(
     kwargs,
     thinking_enabled=False,
     preserve_thinking_blocks=False,
+    proto_logger=None,
 ):
     """处理非流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -132,10 +143,20 @@ async def _handle_non_stream(
     else:
         resp_data = resp
 
+    # Debug: Log OpenAI response received from upstream
+    if proto_logger:
+        proto_logger.log_openai_response(
+            resp_data, model, result.adapter_name or "", stream=False
+        )
+
     # C2/C3 fix: 传入 thinking_enabled 和 preserve_thinking_blocks
     anthropic_response = convert_openai_to_anthropic_response(
         resp_data, model, thinking_enabled=thinking_enabled, preserve_thinking_blocks=preserve_thinking_blocks
     )
+
+    # Debug: Log Anthropic response sent to client
+    if proto_logger:
+        proto_logger.log_anthropic_response(anthropic_response, model, stream=False)
 
     adapter_name = (result.adapter_name or "").encode("latin-1", errors="replace").decode("latin-1")
     return JSONResponse(
@@ -156,6 +177,7 @@ async def _handle_stream(
     kwargs,
     thinking_enabled=False,
     preserve_thinking_blocks=False,
+    proto_logger=None,
 ):
     """处理流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -187,7 +209,8 @@ async def _handle_stream(
         return StreamingResponse(error_gen(), media_type="text/event-stream")
 
     api_key_alias = getattr(request.state, "api_key_name", "")
-    accumulator = StreamAccumulator()
+    accumulator = StreamAccumulator()  # Anthropic output accumulator
+    openai_accumulator = StreamAccumulator()  # OpenAI output accumulator for debug logging
 
     async def capturing_stream(raw_stream):
         """包装原始流，在传给转换器之前累积输出内容"""
@@ -195,7 +218,8 @@ async def _handle_stream(
             if isinstance(chunk, dict) and chunk.get("_stream_error"):
                 yield chunk
                 return
-            accumulator.process_chunk(chunk)
+            accumulator.process_chunk(chunk)  # Anthropic format
+            openai_accumulator.process_chunk(chunk)  # OpenAI format for debug
             yield chunk
 
     async def generate():
@@ -250,6 +274,25 @@ async def _handle_stream(
                     result.usage = info["usage"]
 
             stream_output = accumulator.get_output_summary()
+
+            # Debug: Log stream responses
+            if proto_logger:
+                # Log OpenAI stream response summary
+                openai_output = openai_accumulator.get_output_summary()
+                openai_resp_summary = {
+                    "output_preview": openai_output,
+                    "usage": result.usage,
+                }
+                proto_logger.log_openai_response(
+                    openai_resp_summary, model, result.adapter_name or "", stream=True
+                )
+                # Log Anthropic stream response summary
+                anthropic_resp_summary = {
+                    "output_preview": stream_output,
+                }
+                proto_logger.log_anthropic_response(
+                    anthropic_resp_summary, model, stream=True
+                )
 
             await track_request(
                 request.app.state,

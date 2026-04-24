@@ -648,6 +648,120 @@ class ProtocolLogger:
                 result[k] = v
         return result
 
+    def log_anthropic_request(self, body: dict, model: str, stream: bool) -> None:
+        """Log incoming Anthropic request body with truncated values."""
+        truncated = _truncate_for_debug(body)
+        self.debug(
+            f"anthropic_request",
+            model=model,
+            stream=stream,
+            body_json=json.dumps(truncated, indent=2, ensure_ascii=False),
+        )
+
+    def log_openai_request(self, openai_body: dict) -> None:
+        """Log converted OpenAI request format."""
+        truncated = _truncate_for_debug(openai_body)
+        self.debug(
+            f"openai_request_converted",
+            request_json=json.dumps(truncated, indent=2, ensure_ascii=False),
+        )
+
+    def log_openai_response(
+        self, response: dict, model: str, adapter: str, stream: bool
+    ) -> None:
+        """Log OpenAI response received from upstream."""
+        truncated = _truncate_for_debug(response)
+        self.debug(
+            f"openai_response_received",
+            model=model,
+            adapter=adapter,
+            stream=stream,
+            response_json=json.dumps(truncated, indent=2, ensure_ascii=False),
+        )
+
+    def log_anthropic_response(self, response: dict, model: str, stream: bool) -> None:
+        """Log final Anthropic response sent to client."""
+        truncated = _truncate_for_debug(response)
+        self.debug(
+            f"anthropic_response_sent",
+            model=model,
+            stream=stream,
+            response_json=json.dumps(truncated, indent=2, ensure_ascii=False),
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Debug Logging Helper for Anthropic Flow
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _truncate_for_debug(
+    obj: Any,
+    max_str_len: int = 100,
+    max_list_len: int = 10,
+    sensitive_keys: set[str] = {"api_key", "key", "token", "authorization", "password", "secret"},
+    _depth: int = 0,
+) -> Any:
+    """Recursively truncate values for debug pretty-print logging.
+
+    Args:
+        obj: Object to truncate (dict, list, str, or other)
+        max_str_len: Maximum string length before truncation (default 100)
+        max_list_len: Maximum number of list items to show (default 10)
+        sensitive_keys: Keys whose values should be redacted
+        _depth: Current recursion depth (internal)
+
+    Returns:
+        Truncated copy suitable for json.dumps with indent=2
+    """
+    if _depth > 10:
+        return "...(max depth)"
+
+    if obj is None:
+        return None
+    elif isinstance(obj, str):
+        if len(obj) > max_str_len:
+            return obj[:max_str_len] + "..."
+        return obj
+    elif isinstance(obj, dict):
+        result = {}
+        for k, v in obj.items():
+            if k.lower() in sensitive_keys:
+                result[k] = "[REDACTED]"
+            else:
+                result[k] = _truncate_for_debug(
+                    v, max_str_len, max_list_len, sensitive_keys, _depth + 1
+                )
+        return result
+    elif isinstance(obj, list):
+        if len(obj) > max_list_len:
+            truncated = [
+                _truncate_for_debug(i, max_str_len, max_list_len, sensitive_keys, _depth + 1)
+                for i in obj[:max_list_len]
+            ]
+            truncated.append(f"...({len(obj) - max_list_len} more)")
+            return truncated
+        return [
+            _truncate_for_debug(i, max_str_len, max_list_len, sensitive_keys, _depth + 1)
+            for i in obj
+        ]
+    elif isinstance(obj, (int, float, bool)):
+        return obj
+    elif hasattr(obj, "model_dump"):
+        return _truncate_for_debug(
+            obj.model_dump(exclude_none=True), max_str_len, max_list_len, sensitive_keys, _depth
+        )
+    elif hasattr(obj, "to_dict"):
+        return _truncate_for_debug(
+            obj.to_dict(), max_str_len, max_list_len, sensitive_keys, _depth
+        )
+    else:
+        # Fallback: convert to string and truncate
+        s = str(obj)
+        if len(s) > max_str_len:
+            return s[:max_str_len] + "..."
+        return s
+
 
 def get_protocol_logger(request_id: str = "", protocol: str = "openai") -> ProtocolLogger:
     """Get a protocol logger instance."""
