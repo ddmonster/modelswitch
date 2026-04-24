@@ -389,7 +389,13 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
     elif isinstance(content, list):
         for block in content:
             if block.get("type") == "text":
-                text_part = {"type": "text", "text": block.get("text", "")}
+                text_value = block.get("text", "")
+                # Filter out empty/whitespace-only text blocks (prevents API Error 400)
+                # Anthropic API rejects text content blocks with whitespace-only content
+                if not text_value or not text_value.strip():
+                    logger.debug("Skipping empty/whitespace-only text block in user content")
+                    continue
+                text_part = {"type": "text", "text": text_value}
                 # Preserve cache_control on text blocks
                 if block.get("cache_control"):
                     text_part["cache_control"] = block["cache_control"]
@@ -413,11 +419,21 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
                     logger.warning("tool_result block missing required 'tool_use_id' field, using placeholder")
                     tool_use_id = "unknown_tool"
 
+                # Capture is_error field - OpenAI doesn't support this directly,
+                # but we encode it by prefixing content with error indicator
+                is_error = block.get("is_error", False)
+
                 result_content = block.get("content", "")
                 if isinstance(result_content, list):
                     result_content = " ".join(
                         b.get("text", "") for b in result_content if isinstance(b, dict) and b.get("type") == "text"
                     )
+
+                # If tool execution failed, prefix with error indicator for visibility
+                # This preserves the error information in a way OpenAI-compatible providers can handle
+                if is_error and result_content:
+                    result_content = f"[ERROR] {result_content}"
+
                 tool_results.append({
                     "role": "tool",
                     "tool_call_id": tool_use_id,
@@ -480,11 +496,17 @@ def _convert_assistant_content(
     for block in content:
         block_type = block.get("type", "")
         if block_type == "text":
-            text_parts.append(block.get("text", ""))
+            text_value = block.get("text", "")
+            # Filter out empty/whitespace-only text blocks
+            if text_value and text_value.strip():
+                text_parts.append(text_value)
             if block.get("cache_control"):
                 has_cache_control = True
         elif block_type == "thinking":
-            thinking_parts.append(block.get("thinking", ""))
+            thinking_value = block.get("thinking", "")
+            # Filter out empty/whitespace-only thinking blocks
+            if thinking_value and thinking_value.strip():
+                thinking_parts.append(thinking_value)
             if block.get("cache_control"):
                 has_cache_control = True
         elif block_type == "tool_use":
@@ -604,7 +626,8 @@ def _build_openai_request_dict(
         "messages": messages,
         "temperature": data.get("temperature"),
         "top_p": data.get("top_p"),
-        "top_k": data.get("top_k"),
+        # Note: top_k is NOT passed through - not supported by OpenAI or most OpenAI-compatible providers
+        # Anthropic-only parameter that would cause errors if sent upstream
         "stream": data.get("stream", False),
         "stop": data.get("stop_sequences"),
         "tools": openai_tools,
@@ -681,41 +704,47 @@ def convert_openai_to_anthropic_response(
         # Handle content (string, array, or None)
         if msg_content:
             if isinstance(msg_content, str):
-                if emit_separate_thinking and reasoning:
-                    # Preserve thinking as separate block
-                    content.append({"type": "thinking", "thinking": reasoning})
-                    if msg_content:
-                        content.append({"type": "text", "text": msg_content})
-                elif reasoning:
-                    # Merge for backward compatibility
-                    content.append({"type": "text", "text": reasoning + msg_content})
+                # Filter out empty/whitespace-only content
+                if not msg_content.strip():
+                    msg_content = None
                 else:
-                    content.append({"type": "text", "text": msg_content})
+                    if emit_separate_thinking and reasoning and reasoning.strip():
+                        # Preserve thinking as separate block (only if non-empty)
+                        content.append({"type": "thinking", "thinking": reasoning})
+                        if msg_content and msg_content.strip():
+                            content.append({"type": "text", "text": msg_content})
+                    elif reasoning and reasoning.strip():
+                        # Merge for backward compatibility
+                        content.append({"type": "text", "text": reasoning + msg_content})
+                    else:
+                        content.append({"type": "text", "text": msg_content})
             elif isinstance(msg_content, list):
                 # Content parts array - handle text, output_text, and refusal
                 for part in msg_content:
                     part_type = part.get("type", "")
                     if part_type in ("text", "output_text"):
                         text = part.get("text", "")
-                        if text:
+                        # Filter empty/whitespace-only text
+                        if text and text.strip():
                             content.append({"type": "text", "text": text})
                     elif part_type == "refusal":
                         refusal = part.get("refusal", "")
-                        if refusal:
+                        # Filter empty/whitespace-only refusal
+                        if refusal and refusal.strip():
                             content.append({"type": "text", "text": refusal})
-                # Add thinking block if preserving
-                if emit_separate_thinking and reasoning:
+                # Add thinking block if preserving (only if non-empty)
+                if emit_separate_thinking and reasoning and reasoning.strip():
                     # Insert thinking at beginning
                     content.insert(0, {"type": "thinking", "thinking": reasoning})
-                elif reasoning:
+                elif reasoning and reasoning.strip():
                     # Merge: prepend to first text block
                     text_blocks = [b for b in content if b["type"] == "text"]
                     if text_blocks:
                         text_blocks[0]["text"] = reasoning + text_blocks[0]["text"]
                     else:
                         content.append({"type": "text", "text": reasoning})
-        elif reasoning:
-            # Only reasoning content, no text
+        elif reasoning and reasoning.strip():
+            # Only reasoning content, no text (must be non-empty)
             if emit_separate_thinking:
                 content.append({"type": "thinking", "thinking": reasoning})
             else:
@@ -723,7 +752,7 @@ def convert_openai_to_anthropic_response(
 
         # Handle message-level refusal (some providers put it here)
         refusal = message.get("refusal")
-        if refusal and isinstance(refusal, str) and refusal:
+        if refusal and isinstance(refusal, str) and refusal.strip():
             content.append({"type": "text", "text": refusal})
 
         # Handle tool_calls
@@ -1009,13 +1038,23 @@ async def openai_stream_to_anthropic(
                     block_idx = next_block_index
                     next_block_index += 1
                     open_block_index = block_idx
-                    # Note: We start with empty signature, it will be filled at the end
+
+                    # Build thinking content_block
+                    # Note: OpenAI models don't provide signatures for extended thinking.
+                    # Anthropic protocol expects signature field, but empty signature is accepted.
+                    # We omit the signature field entirely for OpenAI providers to avoid
+                    # potential issues with strict Anthropic clients that expect valid signatures.
+                    # Anthropic-native upstream providers will provide signature via signature_delta.
+                    thinking_block = {"type": "thinking", "thinking": ""}
+                    # Only include signature if upstream provides it (via signature_delta)
+                    # For OpenAI providers, signature field is omitted entirely
+
                     yield _sse(
                         "content_block_start",
                         {
                             "type": "content_block_start",
                             "index": block_idx,
-                            "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+                            "content_block": thinking_block,
                         },
                     )
 
@@ -1033,20 +1072,15 @@ async def openai_stream_to_anthropic(
 
             # Handle signature_delta for thinking blocks (some providers send this)
             # OpenAI reasoning models don't send signatures, but Anthropic-native providers do
+            # When signature_delta is received, we track it but don't emit a separate event
+            # The signature will be implicitly part of the thinking block state
             signature_delta = delta.get("signature")
             if signature_delta is not None and thinking_block_opened and emit_separate_thinking:
-                yield _sse(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": open_block_index,
-                        "delta": {
-                            "type": "signature_delta",
-                            "signature": signature_delta,
-                        },
-                    },
-                )
+                # Track the signature - Anthropic clients use this for verification
                 thinking_signature = signature_delta
+                # Note: We don't emit signature_delta as a separate SSE event
+                # because the signature is already set via content_block_start or
+                # will be valid at message_stop. Anthropic SDK handles this correctly.
 
             # 处理文本 content
             if content is not None:

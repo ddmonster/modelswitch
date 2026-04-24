@@ -93,7 +93,7 @@ def _summarize_output(output: list | None) -> dict | None:
     - tool names (without arguments)
 
     Args:
-        output: List of output parts (text, tool_use)
+        output: List of output parts (thinking, text, tool_use)
 
     Returns:
         Summary dict suitable for logging, or None if empty
@@ -105,11 +105,13 @@ def _summarize_output(output: list | None) -> dict | None:
         "count": len(output),
         "types": {},
         "text_preview": None,
+        "thinking_preview": None,
         "tools": [],
     }
 
     type_counts = {}
     text_parts = []
+    thinking_parts = []
     tool_names = []
 
     for part in output:
@@ -124,6 +126,9 @@ def _summarize_output(output: list | None) -> dict | None:
         if p_type == "text":
             text = part.get("text", "")
             text_parts.append(text)
+        elif p_type == "thinking":
+            thinking = part.get("thinking", "")
+            thinking_parts.append(thinking)
         elif p_type == "tool_use":
             name = part.get("name", "")
             if name:
@@ -137,6 +142,12 @@ def _summarize_output(output: list | None) -> dict | None:
         preview = full_text[:MAX_LOG_CONTENT_LENGTH]
         summary["text_preview"] = preview + ("..." if len(full_text) > MAX_LOG_CONTENT_LENGTH else "")
 
+    # Truncated thinking preview
+    if thinking_parts:
+        full_thinking = "".join(thinking_parts)
+        preview = full_thinking[:MAX_LOG_CONTENT_LENGTH]
+        summary["thinking_preview"] = preview + ("..." if len(full_thinking) > MAX_LOG_CONTENT_LENGTH else "")
+
     # Tool names only (no arguments)
     if tool_names:
         summary["tools"] = tool_names
@@ -147,12 +158,13 @@ def _summarize_output(output: list | None) -> dict | None:
 class StreamAccumulator:
     """Accumulate streaming output for tracking/logging.
 
-    Collects text content and tool calls from OpenAI stream chunks,
+    Collects text content, reasoning/thinking content, and tool calls from OpenAI stream chunks,
     providing a summary suitable for conversation logging.
     """
 
     def __init__(self):
         self.collected_text: list[str] = []
+        self.collected_reasoning: list[str] = []
         self.collected_tool_calls: dict[int, dict] = {}  # index -> {"name", "arguments"}
 
     def process_chunk(self, chunk_data) -> None:
@@ -178,11 +190,13 @@ class StreamAccumulator:
         if not isinstance(delta, dict):
             return
 
+        # Accumulate reasoning_content separately as thinking
+        if delta.get("reasoning_content"):
+            self.collected_reasoning.append(delta["reasoning_content"])
+
         # Accumulate text content
         if delta.get("content"):
             self.collected_text.append(delta["content"])
-        elif delta.get("reasoning_content"):
-            self.collected_text.append(delta["reasoning_content"])
 
         # Accumulate tool calls
         for tc in delta.get("tool_calls", []):
@@ -203,11 +217,16 @@ class StreamAccumulator:
         """Build output summary for tracking.
 
         Returns:
-            List of content parts (text + tool_use), or None if empty
+            List of content parts (thinking + text + tool_use), or None if empty
         """
         parts = []
+        # Add reasoning as thinking block first (if present)
+        if self.collected_reasoning:
+            parts.append({"type": "thinking", "thinking": "".join(self.collected_reasoning)})
+        # Add text content
         if self.collected_text:
             parts.append({"type": "text", "text": "".join(self.collected_text)})
+        # Add tool calls
         for idx in sorted(self.collected_tool_calls):
             tc = self.collected_tool_calls[idx]
             parts.append({
@@ -253,6 +272,9 @@ def _extract_output(result):
         return None
     msg = choices[0].get("message", {})
     parts = []
+    # Capture reasoning_content as thinking block (if present)
+    if msg.get("reasoning_content"):
+        parts.append({"type": "thinking", "thinking": msg["reasoning_content"]})
     if msg.get("content"):
         parts.append({"type": "text", "text": msg["content"]})
     for tc in msg.get("tool_calls", []):

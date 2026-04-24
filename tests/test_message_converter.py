@@ -248,6 +248,18 @@ class TestAnthropicToOpenaiMessages:
         assert result["stop"] == ["END"]
         assert result["stream"] is True
 
+    def test_top_k_not_passed_through(self):
+        """P1 fix: top_k is Anthropic-only parameter, not supported by OpenAI providers."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "temperature": 0.7,
+                "top_k": 50,  # Anthropic-only parameter
+            }
+        )
+        assert result["temperature"] == 0.7
+        assert "top_k" not in result  # Should be filtered out
+
     def test_thinking_param_converts_to_reasoning_effort(self):
         """thinking.type=enabled should set reasoning_effort and use budget_tokens as max_tokens."""
         result = anthropic_to_openai_messages(
@@ -494,6 +506,119 @@ class TestAnthropicToOpenaiMessages:
         assert tool_msg["role"] == "tool"
         assert "result A" in tool_msg["content"]
         assert "result B" in tool_msg["content"]
+
+    def test_user_tool_result_with_is_error(self):
+        """P2 fix: tool_result with is_error=True should prefix content with error indicator."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_3",
+                                "content": "Tool execution failed",
+                                "is_error": True,
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        tool_msg = result["messages"][0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "toolu_3"
+        assert "[ERROR]" in tool_msg["content"]
+        assert "Tool execution failed" in tool_msg["content"]
+
+    def test_user_tool_result_without_is_error(self):
+        """P2 fix: tool_result with is_error=False (or missing) should not have error prefix."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_4",
+                                "content": "Success result",
+                                "is_error": False,
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        tool_msg = result["messages"][0]
+        assert "[ERROR]" not in tool_msg["content"]
+        assert tool_msg["content"] == "Success result"
+
+    def test_user_empty_text_block_filtered(self):
+        """Empty text blocks in user content should be filtered out to prevent API Error 400."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": ""},  # Empty - should be filtered
+                            {"type": "text", "text": "   "},  # Whitespace-only - should be filtered
+                            {"type": "text", "text": "Hello"},  # Valid - should be kept
+                        ],
+                    }
+                ],
+            }
+        )
+        # Only valid text should be in the result
+        msgs = result["messages"]
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert isinstance(msgs[0]["content"], str)
+        assert msgs[0]["content"] == "Hello"
+
+    def test_assistant_empty_text_block_filtered(self):
+        """Empty text blocks in assistant content should be filtered out."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": ""},  # Empty - should be filtered
+                            {"type": "text", "text": "  \n  "},  # Whitespace-only - should be filtered
+                            {"type": "text", "text": "Valid text"},  # Valid - should be kept
+                        ],
+                    }
+                ],
+            }
+        )
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["content"] == "Valid text"
+
+    def test_assistant_empty_thinking_block_filtered(self):
+        """Empty thinking blocks in assistant content should be filtered out."""
+        result = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": ""},  # Empty - should be filtered
+                            {"type": "thinking", "thinking": "   "},  # Whitespace-only - should be filtered
+                            {"type": "thinking", "thinking": "Let me think"},  # Valid - should be kept
+                            {"type": "text", "text": "Answer"},
+                        ],
+                    }
+                ],
+            }
+        )
+        msg = result["messages"][0]
+        assert "Let me think" in msg["content"]
+        assert "Answer" in msg["content"]
+        # Empty thinking blocks should not appear in content
 
     def test_user_mixed_text_and_tool_result(self):
         """user 消息同时有 text 和 tool_result 块"""
@@ -988,6 +1113,54 @@ class TestOpenaiStreamToAnthropic:
         assert '"index": 1' in block_starts[1]
         assert '"type": "tool_use"' in block_starts[1]
 
+    @pytest.mark.asyncio
+    async def test_thinking_block_without_signature(self):
+        """P9 fix: thinking block from OpenAI provider should not have signature field."""
+        async def fake_stream():
+            yield {
+                "choices": [
+                    {
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "Let me think...",
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            yield {
+                "choices": [
+                    {
+                        "delta": {"content": "The answer"},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+            yield {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+
+        events = []
+        async for event in openai_stream_to_anthropic(
+            fake_stream(), "m", thinking_enabled=True
+        ):
+            events.append(event if isinstance(event, bytes) else event.encode())
+
+        text = b"".join(events).decode()
+        # Thinking block should be present
+        assert '"type": "thinking"' in text
+        # Content block should NOT contain signature field (OpenAI providers don't provide it)
+        # Check that the content_block for thinking doesn't include "signature"
+        import json
+        # Parse the content_block_start event for thinking
+        lines = [l for l in text.split("\n") if "content_block_start" in l]
+        for line in lines:
+            if '"type": "thinking"' in line:
+                # Extract the data
+                data_str = line.split("data: ")[1]
+                data = json.loads(data_str)
+                content_block = data.get("content_block", {})
+                # Signature should be absent for OpenAI providers
+                assert "signature" not in content_block
+
 
 class TestConvertOpenaiToAnthropicResponse:
     """测试 convert_openai_to_anthropic_response 的 tool_calls 转换"""
@@ -1179,6 +1352,63 @@ class TestConvertOpenaiToAnthropicResponse:
                 "choices": [{"message": {"content": None}, "finish_reason": "stop"}],
             }
         )
+        assert len(resp["content"]) == 1
+        assert resp["content"][0]["type"] == "text"
+
+    def test_whitespace_content_filtered(self):
+        """Whitespace-only content should be filtered out to prevent API Error 400."""
+        resp = self._call(
+            {
+                "choices": [
+                    {
+                        "message": {"content": "   \n\t  "},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
+        # Should have fallback empty text block (no other content)
+        assert len(resp["content"]) == 1
+        assert resp["content"][0]["type"] == "text"
+
+    def test_whitespace_reasoning_filtered(self):
+        """Whitespace-only reasoning should be filtered out."""
+        resp = self._call(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Answer",
+                            "reasoning_content": "   \n  ",  # Whitespace-only
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            thinking_enabled=True,
+        )
+        # Should only have text block, no thinking block (filtered)
+        assert len(resp["content"]) == 1
+        assert resp["content"][0]["type"] == "text"
+        assert resp["content"][0]["text"] == "Answer"
+
+    def test_empty_reasoning_filtered(self):
+        """Empty reasoning_content should be filtered out."""
+        resp = self._call(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "Hello",
+                            "reasoning_content": "",  # Empty
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+            thinking_enabled=True,
+        )
+        # Should only have text block
         assert len(resp["content"]) == 1
         assert resp["content"][0]["type"] == "text"
 
