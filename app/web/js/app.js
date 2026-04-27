@@ -306,10 +306,10 @@ function renderProviders(providers) {
                 </table>
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="editProvider('${esc(p.name)}')">${t("common.edit")}</button>
-                <button class="btn btn-sm btn-test" onclick="testProvider('${esc(p.name)}')">${t("provider.btn.test")}</button>
-                <button class="btn btn-sm ${p.enabled ? "btn-danger" : ""}" onclick="toggleProvider('${esc(p.name)}')">${p.enabled ? t("common.disable") : t("common.enable")}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteProvider('${esc(p.name)}')">${t("common.delete")}</button>
+                <button class="btn btn-sm" onclick="editProvider('${escAttr(p.name)}')">${t("common.edit")}</button>
+                <button class="btn btn-sm btn-test" onclick="testProvider('${escAttr(p.name)}')">${t("provider.btn.test")}</button>
+                <button class="btn btn-sm ${p.enabled ? "btn-danger" : ""}" onclick="toggleProvider('${escAttr(p.name)}')">${p.enabled ? t("common.disable") : t("common.enable")}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteProvider('${escAttr(p.name)}')">${t("common.delete")}</button>
             </div>
             <div id="provider-test-${esc(p.name)}" class="test-result" style="display:none"></div>
         </div>
@@ -486,13 +486,13 @@ function renderModels(models) {
                   .join("")}
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="editModel('${esc(name)}')">${t("common.edit")}</button>
+                <button class="btn btn-sm" onclick="editModel('${escAttr(name)}')">${t("common.edit")}</button>
                 <select id="test-type-${esc(name)}" class="test-type-select">
                     <option value="simple">${t("model.test.type.simple")}</option>
                     <option value="tool">${t("model.test.type.tool")}</option>
                 </select>
-                <button class="btn btn-sm btn-test" onclick="testModel('${esc(name)}')">${t("model.btn.test")}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteModel('${esc(name)}')">${t("common.delete")}</button>
+                <button class="btn btn-sm btn-test" onclick="testModel('${escAttr(name)}')">${t("model.btn.test")}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteModel('${escAttr(name)}')">${t("common.delete")}</button>
             </div>
             <div id="model-test-${esc(name)}" class="test-result" style="display:none"></div>
         </div>
@@ -771,8 +771,8 @@ function renderKeys(keys) {
                 </table>
             </div>
             <div class="card-actions" style="margin-top:8px">
-                <button class="btn btn-sm" onclick="toggleKey('${esc(k.key_raw || k.key)}')">${k.enabled ? t("common.disable") : t("common.enable")}</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteKey('${esc(k.key_raw || k.key)}')">${t("common.delete")}</button>
+                <button class="btn btn-sm" onclick="toggleKey('${escAttr(k.key_raw || k.key)}')">${k.enabled ? t("common.disable") : t("common.enable")}</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteKey('${escAttr(k.key_raw || k.key)}')">${t("common.delete")}</button>
             </div>
         </div>
     `,
@@ -1630,6 +1630,17 @@ function esc(s) {
   const d = document.createElement("div");
   d.textContent = String(s);
   return d.innerHTML;
+}
+
+// Escape for use in onclick handlers (quotes and backslashes)
+function escAttr(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/"/g, "\\\"")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
 }
 
 function formatNum(n) {
