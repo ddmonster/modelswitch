@@ -331,6 +331,7 @@ function showAddProvider() {
   document.getElementById("pf-max-concurrent").value = "0";
   document.getElementById("pf-max-queue-size").value = "100";
   document.getElementById("pf-queue-timeout").value = "300";
+  document.getElementById("pf-disable-stream-options").checked = false;
   document.getElementById("provider-form").style.display = "flex";
 }
 
@@ -353,6 +354,7 @@ async function editProvider(name) {
   document.getElementById("pf-max-concurrent").value = p.max_concurrent || 0;
   document.getElementById("pf-max-queue-size").value = p.max_queue_size || 100;
   document.getElementById("pf-queue-timeout").value = p.queue_timeout || 300;
+  document.getElementById("pf-disable-stream-options").checked = p.disable_stream_options || false;
   document.getElementById("provider-form").style.display = "flex";
 }
 
@@ -389,6 +391,8 @@ async function saveProvider() {
       parseInt(document.getElementById("pf-max-queue-size").value) || 100,
     queue_timeout:
       parseFloat(document.getElementById("pf-queue-timeout").value) || 300,
+    disable_stream_options:
+      document.getElementById("pf-disable-stream-options").checked,
   };
 
   try {
@@ -483,6 +487,10 @@ function renderModels(models) {
             </div>
             <div class="card-actions" style="margin-top:8px">
                 <button class="btn btn-sm" onclick="editModel('${esc(name)}')">${t("common.edit")}</button>
+                <select id="test-type-${esc(name)}" class="test-type-select">
+                    <option value="simple">${t("model.test.type.simple")}</option>
+                    <option value="tool">${t("model.test.type.tool")}</option>
+                </select>
                 <button class="btn btn-sm btn-test" onclick="testModel('${esc(name)}')">${t("model.btn.test")}</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteModel('${esc(name)}')">${t("common.delete")}</button>
             </div>
@@ -657,13 +665,14 @@ async function deleteModel(name) {
 // ========== Model Test ==========
 async function testModel(name) {
   const el = document.getElementById(`model-test-${name}`);
+  const testType = document.getElementById(`test-type-${name}`)?.value || "simple";
   el.style.display = "block";
   el.innerHTML = `<span class="test-loading">${t("model.test.chainProbe")}</span>`;
 
   try {
     const result = await api(
       "POST",
-      `/api/config/models/${encodeURIComponent(name)}/test`,
+      `/api/config/models/${encodeURIComponent(name)}/test?test_type=${testType}`,
     );
     renderModelTestResult(el, result);
   } catch (e) {
@@ -690,7 +699,7 @@ function renderModelTestResult(el, result) {
         ? `${c.usage.prompt_tokens || 0}→${c.usage.completion_tokens || 0}`
         : "-";
       const errorStr = c.error
-        ? `<div class="test-chain-error">${esc(c.error)}</div>`
+        ? `<div class="test-chain-error">${esc(typeof c.error === 'object' ? JSON.stringify(c.error) : c.error)}</div>`
         : "";
 
       html += `<tr class="${isHit ? "chain-hit-row" : ""}">
@@ -706,10 +715,22 @@ function renderModelTestResult(el, result) {
   }
 
   if (result.success) {
-    html =
-      `<span class="test-ok">${t("model.test.success")}</span> <span class="test-meta">${t("model.test.hit")}: ${esc(result.adapter_used)} · ${t("provider.test.latency")}: ${result.latency_ms}ms</span>
-            ${result.preview ? `<div class="test-preview">"${esc(result.preview)}"</div>` : ""}` +
-      html;
+    let resultHeader = `<span class="test-ok">${t("model.test.success")}</span> <span class="test-meta">${t("model.test.hit")}: ${esc(result.adapter_used)} · ${t("provider.test.latency")}: ${result.latency_ms}ms</span>`;
+
+    // Show tool_calls if present (tool test)
+    if (result.tool_calls && result.tool_calls.length > 0) {
+      const toolInfo = result.tool_calls.map(tc =>
+        `<span class="badge badge-blue">${esc(tc.name)}</span>`
+      ).join(" ");
+      resultHeader += `<div class="test-tool-calls"><strong>${t("model.test.toolCalls")}:</strong> ${toolInfo}</div>`;
+      if (result.preview) {
+        resultHeader += `<div class="test-preview">"${esc(result.preview)}"</div>`;
+      }
+    } else if (result.preview) {
+      resultHeader += `<div class="test-preview">"${esc(result.preview)}"</div>`;
+    }
+
+    html = resultHeader + html;
   } else {
     html =
       `<span class="test-fail">${t("model.test.allFailed")}</span> <span class="test-meta">${esc(result.error || "")}</span>` +

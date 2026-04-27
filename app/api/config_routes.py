@@ -58,6 +58,7 @@ class CreateProviderRequest(BaseModel):
     max_concurrent: int = 0
     max_queue_size: int = 100
     queue_timeout: float = 300.0
+    disable_stream_options: bool = False
 
 
 class UpdateProviderRequest(BaseModel):
@@ -69,6 +70,7 @@ class UpdateProviderRequest(BaseModel):
     max_concurrent: Optional[int] = None
     max_queue_size: Optional[int] = None
     queue_timeout: Optional[float] = None
+    disable_stream_options: Optional[bool] = None
 
 
 @router.get("/providers")
@@ -282,8 +284,11 @@ async def test_provider(name: str, request: Request):
 
 
 @router.post("/models/{name}/test")
-async def test_model(name: str, request: Request):
-    """测试模型端到端调用，chain 模式返回每个 adapter 的独立结果"""
+async def test_model(name: str, request: Request, test_type: str = "simple"):
+    """测试模型端到端调用，chain 模式返回每个 adapter 的独立结果
+
+    test_type: "simple" | "tool" - 测试类型
+    """
     import time
 
     chain_router = request.app.state.chain_router
@@ -297,6 +302,32 @@ async def test_model(name: str, request: Request):
 
     chain_results = []
     hit_index = -1  # 第一个成功的 adapter 索引
+
+    # Prepare test payload based on test_type
+    if test_type == "tool":
+        # Tool use test: ask model to get current weather
+        test_messages = [{"role": "user", "content": "What's the weather in Beijing today?"}]
+        test_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather for a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "description": "City name"}
+                        },
+                        "required": ["city"]
+                    }
+                }
+            }
+        ]
+        test_kwargs = {"tools": test_tools, "tool_choice": "auto", "max_tokens": 100}
+    else:
+        # Simple text test
+        test_messages = [{"role": "user", "content": "Hi"}]
+        test_kwargs = {"max_tokens": 20}
 
     for i, ref in enumerate(sorted_refs):
         provider = providers.get(ref.adapter)
@@ -331,24 +362,44 @@ async def test_model(name: str, request: Request):
         try:
             result = await adapter.chat_completion(
                 model_name=ref.model_name,
-                messages=[{"role": "user", "content": "Hi"}],
+                messages=test_messages,
                 stream=False,
                 timeout=ref.timeout,
                 request_id="test",
-                max_tokens=20,
+                **test_kwargs,
             )
             latency = (time.monotonic() - start) * 1000
 
             if result.success:
                 preview = ""
+                tool_calls = None
                 if result.body:
                     if hasattr(result.body, "choices") and result.body.choices:
                         msg = result.body.choices[0].message
                         preview = getattr(msg, "content", "") or ""
+                        # Check for tool_calls
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            tool_calls = [
+                                {
+                                    "name": tc.function.name if hasattr(tc, "function") else tc.get("function", {}).get("name", ""),
+                                    "args": tc.function.arguments if hasattr(tc, "function") else tc.get("function", {}).get("arguments", "")
+                                }
+                                for tc in msg.tool_calls
+                            ]
                     elif isinstance(result.body, dict):
                         choices = result.body.get("choices", [])
                         if choices:
-                            preview = choices[0].get("message", {}).get("content", "")
+                            msg = choices[0].get("message", {})
+                            preview = msg.get("content", "") or ""
+                            # Check for tool_calls
+                            if msg.get("tool_calls"):
+                                tool_calls = [
+                                    {
+                                        "name": tc.get("function", {}).get("name", ""),
+                                        "args": tc.get("function", {}).get("arguments", "")
+                                    }
+                                    for tc in msg["tool_calls"]
+                                ]
 
                 entry = {
                     "adapter": ref.adapter,
@@ -358,6 +409,8 @@ async def test_model(name: str, request: Request):
                     "latency_ms": round(latency, 0),
                     "usage": result.usage,
                     "preview": preview[:200],
+                    "tool_calls": tool_calls,
+                    "test_type": test_type,
                 }
                 chain_results.append(entry)
                 if hit_index == -1:
@@ -401,11 +454,13 @@ async def test_model(name: str, request: Request):
     return {
         "success": overall_success,
         "mode": model_config.mode,
+        "test_type": test_type,
         "adapter_used": hit["adapter"] if hit else "",
         "model_name": hit["model_name"] if hit else "",
         "latency_ms": hit["latency_ms"] if hit else 0,
         "usage": hit.get("usage") if hit else None,
         "preview": hit.get("preview", "") if hit else "",
+        "tool_calls": hit.get("tool_calls") if hit else None,
         "error": chain_results[-1].get("error", "") if not overall_success and chain_results else "No adapters",
         "chain": chain_results,
     }

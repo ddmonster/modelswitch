@@ -77,6 +77,9 @@ window.I18N = {
       "provider.queue.enabled": "已启用",
       "provider.queue.disabled": "未启用",
       "provider.queue.info": "并发: {0} | 队列: {1} | 超时: {2}s",
+      "provider.section.stream": "流式响应配置",
+      "provider.label.disableStreamOptions": "禁用 stream_options (旧版 vLLM 兼容)",
+      "provider.help.disableStreamOptions": "适用于不支持 stream_options.include_usage 的旧版本 vLLM 或特殊 provider",
 
       // Queue
       "queue.label.autoRefresh": "自动刷新 (5s)",
@@ -109,6 +112,9 @@ window.I18N = {
       "model.test.success": "调用成功",
       "model.test.allFailed": "全部失败",
       "model.test.hit": "命中",
+      "model.test.type.simple": "简单测试",
+      "model.test.type.tool": "工具测试",
+      "model.test.toolCalls": "工具调用",
       "model.validation.nameRequired": "请填写模型名称",
       "model.validation.adapterRequired":
         "请至少添加一个有效的适配器（供应商和模型名必填）",
@@ -296,6 +302,9 @@ window.I18N = {
       "provider.queue.enabled": "Enabled",
       "provider.queue.disabled": "Disabled",
       "provider.queue.info": "Concurrent: {0} | Queue: {1} | Timeout: {2}s",
+      "provider.section.stream": "Streaming Config",
+      "provider.label.disableStreamOptions": "Disable stream_options (old vLLM compatibility)",
+      "provider.help.disableStreamOptions": "For old vLLM versions or special providers that don't support stream_options.include_usage",
 
       // Queue
       "queue.label.autoRefresh": "Auto Refresh (5s)",
@@ -328,6 +337,9 @@ window.I18N = {
       "model.test.success": "Call succeeded",
       "model.test.allFailed": "All failed",
       "model.test.hit": "Hit",
+      "model.test.type.simple": "Simple Test",
+      "model.test.type.tool": "Tool Test",
+      "model.test.toolCalls": "Tool Calls",
       "model.validation.nameRequired": "Please enter a model name",
       "model.validation.adapterRequired":
         "Please add at least one valid adapter (provider and model name required)",

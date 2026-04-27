@@ -119,6 +119,16 @@
                             <input id="pf-queue-timeout" type="number" value="300" min="1" placeholder="300">
                         </div>
                     </div>
+                    <div class="form-section">
+                        <h4 data-i18n="provider.section.stream">流式响应配置</h4>
+                        <div class="form-group">
+                            <label class="checkbox-label">
+                                <input type="checkbox" id="pf-disable-stream-options">
+                                <span data-i18n="provider.label.disableStreamOptions">禁用 stream_options (旧版 vLLM 兼容)</span>
+                            </label>
+                            <small data-i18n="provider.help.disableStreamOptions">适用于不支持 stream_options.include_usage 的旧版本 vLLM 或特殊 provider</small>
+                        </div>
+                    </div>
                     <div class="form-actions">
                         <button class="btn btn-primary" onclick="saveProvider()" data-i18n="common.save">保存</button>
                         <button class="btn" onclick="hideProviderForm()" data-i18n="common.cancel">取消</button>
