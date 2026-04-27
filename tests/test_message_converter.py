@@ -2318,6 +2318,83 @@ class TestClaudeCode2xCompatibility:
         assert msg["content"] == "Here's my answer"
         assert "tool_calls" not in msg
 
+    def test_tool_result_with_non_text_content(self):
+        """tool_result with mixed content (text + image) should be JSON serialized.
+
+        OpenAI tool messages only support string content, so we JSON serialize
+        complex content to preserve all data (images, structured objects, etc).
+        """
+        import json
+
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_1",
+                                "content": [
+                                    {"type": "text", "text": "Screenshot result"},
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "image/png",
+                                            "data": "base64imagedata",
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        tool_msg = result["messages"][0]
+        assert tool_msg["role"] == "tool"
+        assert tool_msg["tool_call_id"] == "toolu_1"
+        # Content should be JSON string containing both text and image
+        parsed = json.loads(tool_msg["content"])
+        assert len(parsed) == 2
+        assert parsed[0]["type"] == "text"
+        assert parsed[1]["type"] == "image"
+
+    def test_tool_result_empty_content(self):
+        """tool_result with no content should have empty string."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "toolu_1"},
+                        ],
+                    }
+                ],
+            }
+        )
+        tool_msg = result["messages"][0]
+        assert tool_msg["content"] == ""
+
+    def test_tool_result_null_content(self):
+        """tool_result with null/None content should have empty string."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "tool_result", "tool_use_id": "toolu_1", "content": None},
+                        ],
+                    }
+                ],
+            }
+        )
+        tool_msg = result["messages"][0]
+        assert tool_msg["content"] == ""
+
     def test_multiple_tool_use_blocks_in_assistant(self):
         """Claude Code 2.x may call multiple tools in one message."""
         result, _ = anthropic_to_openai_messages(

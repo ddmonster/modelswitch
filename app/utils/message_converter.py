@@ -546,10 +546,29 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
                 is_error = block.get("is_error", False)
 
                 result_content = block.get("content", "")
+
+                # Handle different content types in tool_result:
+                # 1. String content -> use directly
+                # 2. List with only text blocks -> join text
+                # 3. List with mixed content (images, etc.) -> JSON serialize to preserve all data
                 if isinstance(result_content, list):
-                    result_content = " ".join(
-                        b.get("text", "") for b in result_content if isinstance(b, dict) and b.get("type") == "text"
+                    # Check if all blocks are text
+                    all_text_blocks = all(
+                        isinstance(b, dict) and b.get("type") == "text"
+                        for b in result_content
                     )
+
+                    if all_text_blocks:
+                        # Simple case: only text blocks, join them
+                        result_content = " ".join(
+                            b.get("text", "") for b in result_content if isinstance(b, dict)
+                        )
+                    else:
+                        # Complex case: contains non-text content (images, etc.)
+                        # JSON serialize to preserve all data (matches reference implementation)
+                        # This ensures images and other structured content are not lost
+                        logger.debug(f"[tool_result] Content contains non-text blocks, JSON serializing")
+                        result_content = json.dumps(result_content, ensure_ascii=False)
 
                 # If tool execution failed, prefix with error indicator for visibility
                 # This preserves the error information in a way OpenAI-compatible providers can handle
