@@ -322,6 +322,8 @@ async def client(sample_config):
         headers={"Authorization": "Bearer sk-test-admin"},
     ) as c:
         yield c
+    # Cleanup: close tracker before event loop closes
+    await tracker.close()
     # Cleanup temp config file
     try:
         os.unlink(app.state.config_path)
@@ -337,6 +339,7 @@ async def client_expired_key(config_with_expired_key):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+    await tracker.close()
     try:
         os.unlink(app.state.config_path)
     except OSError:
@@ -352,6 +355,7 @@ async def client_with_model_restriction(config_with_model_restriction):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+    await tracker.close()
     try:
         os.unlink(app.state.config_path)
     except OSError:
@@ -366,6 +370,7 @@ async def client_rate_limited(config_with_rate_limit):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+    await tracker.close()
     try:
         os.unlink(app.state.config_path)
     except OSError:
