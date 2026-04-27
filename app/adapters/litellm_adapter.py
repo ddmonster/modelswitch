@@ -121,7 +121,7 @@ class LiteLLMAdapter(BaseAdapter):
 
             # Build kwargs for litellm.acompletion
             create_kwargs = self._build_litellm_kwargs(
-                litellm_model, messages, stream, timeout, **kwargs
+                litellm_model, messages, stream, timeout, request_id, **kwargs
             )
 
             # Log upstream request
@@ -248,6 +248,7 @@ class LiteLLMAdapter(BaseAdapter):
         messages: list,
         stream: bool,
         timeout: int,
+        request_id: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Build kwargs for litellm.acompletion."""
@@ -280,6 +281,13 @@ class LiteLLMAdapter(BaseAdapter):
         for k, v in kwargs.items():
             if k in supported_params and v is not None:
                 create_kwargs[k] = v
+
+        # For streaming, ensure stream_options includes usage (like original OpenAIAdapter)
+        if stream and "stream_options" not in create_kwargs:
+            # Check if provider has disable_stream_options flag (vLLM compatibility)
+            if not getattr(self.provider, "disable_stream_options", False):
+                create_kwargs["stream_options"] = {"include_usage": True}
+                logger.debug(f"[{request_id}] Auto-adding stream_options: include_usage")
 
         # Add custom headers if configured
         if self.provider.custom_headers:
