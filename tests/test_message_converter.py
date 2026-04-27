@@ -12,7 +12,7 @@ from app.utils.message_converter import (
 
 class TestAnthropicToOpenaiMessages:
     def test_simple_user_message(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "claude-3",
                 "messages": [{"role": "user", "content": "Hello"}],
@@ -24,7 +24,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["model"] == "claude-3"
 
     def test_system_string(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "system": "You are helpful.",
@@ -37,7 +37,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["messages"][1] == {"role": "user", "content": "hi"}
 
     def test_system_list_of_blocks(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "system": [
@@ -51,7 +51,7 @@ class TestAnthropicToOpenaiMessages:
         assert "Part 2." in result["messages"][0]["content"]
 
     def test_system_list_with_non_text_blocks_ignored(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "system": [
@@ -63,7 +63,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["messages"][0]["content"] == "Only this"
 
     def test_user_content_list_with_text_and_image(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -95,7 +95,7 @@ class TestAnthropicToOpenaiMessages:
         """Single text block in list should be simplified to string content.
         This ensures compatibility with providers that don't support array content (GLM/BigModel).
         """
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -114,7 +114,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_single_text_block_with_cache_control_preserved(self):
         """Single text block with cache_control should preserve the marker."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -145,7 +145,7 @@ class TestAnthropicToOpenaiMessages:
 
         This fix ensures multiple text-only blocks are joined into a single string.
         """
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -169,7 +169,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_multiple_text_blocks_with_cache_control_preserved(self):
         """Multiple text blocks with cache_control should preserve marker from first block."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -194,7 +194,7 @@ class TestAnthropicToOpenaiMessages:
         assert msgs[0]["cache_control"] == {"type": "ephemeral"}
 
     def test_assistant_string_content(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "assistant", "content": "I said this"}],
             }
@@ -202,7 +202,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["messages"] == [{"role": "assistant", "content": "I said this"}]
 
     def test_assistant_list_content(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -221,11 +221,11 @@ class TestAnthropicToOpenaiMessages:
         assert "Part B" in msg["content"]
 
     def test_empty_messages(self):
-        result = anthropic_to_openai_messages({"messages": []})
+        result, tool_name_mapping = anthropic_to_openai_messages({"messages": []})
         assert result["messages"] == []
 
     def test_no_system(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
             }
@@ -233,7 +233,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["messages"] == [{"role": "user", "content": "hi"}]
 
     def test_extra_params_passed_through(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "temperature": 0.7,
@@ -250,7 +250,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_top_k_not_passed_through(self):
         """P1 fix: top_k is Anthropic-only parameter, not supported by OpenAI providers."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "temperature": 0.7,
@@ -262,7 +262,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_thinking_param_converts_to_reasoning_effort(self):
         """thinking.type=enabled should set reasoning_effort and use budget_tokens as max_tokens."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "test",
                 "thinking": {"type": "enabled", "budget_tokens": 10000},
@@ -274,7 +274,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_thinking_param_disabled_ignored(self):
         """thinking.type=disabled should not affect conversion."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "test",
                 "thinking": {"type": "disabled"},
@@ -286,7 +286,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_assistant_thinking_blocks_in_history(self):
         """Prior assistant thinking blocks should be merged into text content."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -307,7 +307,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_tools_conversion(self):
         """Anthropic tools 格式转为 OpenAI 格式"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "weather?"}],
                 "tools": [
@@ -332,7 +332,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_no_tools_returns_none(self):
         """无 tools 时返回 None"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
             }
@@ -341,7 +341,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["tool_choice"] is None
 
     def test_tool_choice_auto(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": {"type": "auto"},
@@ -350,7 +350,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["tool_choice"] == "auto"
 
     def test_tool_choice_any(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": {"type": "any"},
@@ -359,7 +359,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["tool_choice"] == "required"
 
     def test_tool_choice_none(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": {"type": "none"},
@@ -368,7 +368,7 @@ class TestAnthropicToOpenaiMessages:
         assert result["tool_choice"] == "none"
 
     def test_tool_choice_named(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": {"type": "tool", "name": "get_weather"},
@@ -380,7 +380,7 @@ class TestAnthropicToOpenaiMessages:
         }
 
     def test_tool_choice_string(self):
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tool_choice": "auto",
@@ -392,7 +392,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_assistant_tool_use_blocks(self):
         """assistant 的 tool_use 块转为 OpenAI tool_calls"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -422,7 +422,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_assistant_tool_use_only(self):
         """assistant 只有 tool_use 无文本"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -445,7 +445,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_tool_result_string_content(self):
         """user 的 tool_result 块（字符串 content）转为 OpenAI role:tool"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -483,7 +483,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_tool_result_list_content(self):
         """tool_result 的 content 为列表时提取文本"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -509,7 +509,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_tool_result_with_is_error(self):
         """P2 fix: tool_result with is_error=True should prefix content with error indicator."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -534,7 +534,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_tool_result_without_is_error(self):
         """P2 fix: tool_result with is_error=False (or missing) should not have error prefix."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -557,7 +557,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_empty_text_block_filtered(self):
         """Empty text blocks in user content should be filtered out to prevent API Error 400."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -580,7 +580,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_assistant_empty_text_block_filtered(self):
         """Empty text blocks in assistant content should be filtered out."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -600,7 +600,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_assistant_empty_thinking_block_filtered(self):
         """Empty thinking blocks in assistant content should be filtered out."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -622,7 +622,7 @@ class TestAnthropicToOpenaiMessages:
 
     def test_user_mixed_text_and_tool_result(self):
         """user 消息同时有 text 和 tool_result 块"""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -1499,7 +1499,7 @@ class TestOSeriesModels:
 
     def test_o_series_uses_max_completion_tokens(self):
         """o-series models should use max_completion_tokens instead of max_tokens."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "o3-mini",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1511,7 +1511,7 @@ class TestOSeriesModels:
 
     def test_non_o_series_keeps_max_tokens(self):
         """Non o-series models should keep max_tokens."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "gpt-4o",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1523,7 +1523,7 @@ class TestOSeriesModels:
 
     def test_o_series_with_budget_tokens(self):
         """o-series with thinking.budget_tokens should use max_completion_tokens."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "o3",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1560,12 +1560,12 @@ class TestReasoningEffortResolution:
         }
         assert resolve_reasoning_effort(body) == "low"
 
-    def test_thinking_adaptive_maps_high(self):
-        """thinking.type=adaptive should map to high."""
+    def test_thinking_adaptive_maps_medium(self):
+        """thinking.type=adaptive should map to medium (LiteLLM-aligned behavior)."""
         from app.utils.message_converter import resolve_reasoning_effort
 
         body = {"thinking": {"type": "adaptive"}}
-        assert resolve_reasoning_effort(body) == "high"
+        assert resolve_reasoning_effort(body) == "medium"
 
     def test_budget_small_maps_low(self):
         """Small budget_tokens should map to low effort."""
@@ -1590,7 +1590,7 @@ class TestReasoningEffortResolution:
 
     def test_gpt5_with_output_config(self):
         """GPT-5+ models should use reasoning_effort from output_config."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "model": "gpt-5",
                 "messages": [{"role": "user", "content": "hi"}],
@@ -1605,7 +1605,7 @@ class TestCacheControlPreservation:
 
     def test_cache_control_on_system(self):
         """cache_control on system blocks should be preserved."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "system": [
@@ -1618,7 +1618,7 @@ class TestCacheControlPreservation:
 
     def test_cache_control_on_tools(self):
         """cache_control on tools should be preserved."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tools": [
@@ -1634,7 +1634,7 @@ class TestCacheControlPreservation:
 
     def test_batchtool_filtered(self):
         """BatchTool should be filtered from tools."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [{"role": "user", "content": "hi"}],
                 "tools": [
@@ -1793,7 +1793,7 @@ class TestPreserveThinkingBlocks:
 
     def test_assistant_thinking_preserved_in_request(self):
         """When preserve_thinking_blocks=True, thinking should be emitted as reasoning_content."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -1815,7 +1815,7 @@ class TestPreserveThinkingBlocks:
 
     def test_assistant_thinking_preserved_backward_compatible(self):
         """When preserve_thinking_blocks=False (default), thinking should be merged into text."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -1838,7 +1838,7 @@ class TestPreserveThinkingBlocks:
 
     def test_assistant_thinking_only_preserved(self):
         """When preserve_thinking_blocks=True and only thinking content."""
-        result = anthropic_to_openai_messages(
+        result, tool_name_mapping = anthropic_to_openai_messages(
             {
                 "messages": [
                     {
@@ -1984,3 +1984,170 @@ class TestPreserveThinkingBlocks:
         # Text should contain both reasoning and content
         assert "Thinking..." in text
         assert "Answer" in text
+
+
+class TestToolNameTruncation:
+    """Tests for tool name truncation (OpenAI 64-char limit)."""
+
+    def test_short_tool_name_not_truncated(self):
+        """Tool names under 64 chars should not be truncated."""
+        from app.utils.message_converter import truncate_tool_name
+
+        assert truncate_tool_name("get_weather") == "get_weather"
+        assert truncate_tool_name("short_tool") == "short_tool"
+
+    def test_long_tool_name_truncated(self):
+        """Tool names over 64 chars should be truncated with hash."""
+        from app.utils.message_converter import truncate_tool_name, OPENAI_MAX_TOOL_NAME_LENGTH
+
+        long_name = "this_is_a_very_long_tool_name_that_exceeds_the_openai_limit_of_64_characters"
+        truncated = truncate_tool_name(long_name)
+        assert len(truncated) == OPENAI_MAX_TOOL_NAME_LENGTH
+        assert truncated != long_name
+        # Should contain underscore separator for hash
+        assert "_" in truncated[-9:]  # hash is last 8 chars + underscore
+
+    def test_tool_name_mapping_created(self):
+        """Long tool names should be added to mapping."""
+        from app.utils.message_converter import create_tool_name_mapping, truncate_tool_name
+
+        long_name = "very_long_tool_name_exceeding_sixty_four_characters_for_testing_purposes"
+        tools = [{"name": "short"}, {"name": long_name}]
+        mapping = create_tool_name_mapping(tools)
+        # Only long name should be in mapping
+        assert "short" not in mapping
+        truncated = truncate_tool_name(long_name)
+        assert mapping[truncated] == long_name
+
+    def test_tools_with_long_names_converted(self):
+        """Tools with long names should be truncated in conversion."""
+        long_name = "this_is_a_very_long_tool_name_that_exceeds_sixty_four_characters_limit"
+        result, mapping = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {"name": "short_tool", "input_schema": {"type": "object"}},
+                    {"name": long_name, "input_schema": {"type": "object"}},
+                ],
+            }
+        )
+        assert len(result["tools"]) == 2
+        # First tool should not be truncated
+        assert result["tools"][0]["function"]["name"] == "short_tool"
+        # Second tool should be truncated
+        truncated_name = result["tools"][1]["function"]["name"]
+        assert len(truncated_name) <= 64
+        assert truncated_name != long_name
+        # Mapping should restore original name
+        assert mapping[truncated_name] == long_name
+
+
+class TestMetadataUserId:
+    """Tests for metadata.user_id -> user field mapping."""
+
+    def test_metadata_user_id_mapped(self):
+        """metadata.user_id should be mapped to user field."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "metadata": {"user_id": "test_user_123"},
+            }
+        )
+        assert result["user"] == "test_user_123"
+
+    def test_metadata_user_id_truncated(self):
+        """metadata.user_id should be truncated to 64 chars."""
+        long_id = "a" * 100  # 100 characters
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "metadata": {"user_id": long_id},
+            }
+        )
+        assert result["user"] == long_id[:64]
+        assert len(result["user"]) == 64
+
+    def test_no_metadata_user_id_not_mapped(self):
+        """No metadata.user_id should not add user field."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+        )
+        assert "user" not in result
+
+
+class TestOutputFormat:
+    """Tests for output_format/output_config structured output support."""
+
+    def test_output_format_json_schema(self):
+        """output_format json_schema should be mapped to response_format."""
+        schema = {"type": "object", "properties": {"name": {"type": "string"}}}
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "output_format": {"type": "json_schema", "schema": schema},
+            }
+        )
+        assert "response_format" in result
+        assert result["response_format"]["type"] == "json_schema"
+        assert result["response_format"]["json_schema"]["schema"] == schema
+        assert result["response_format"]["json_schema"]["strict"] is True
+
+    def test_output_config_format_json_schema(self):
+        """output_config.format json_schema should be mapped to response_format."""
+        schema = {"type": "object", "properties": {"result": {"type": "number"}}}
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "output_config": {"format": {"type": "json_schema", "schema": schema}},
+            }
+        )
+        assert "response_format" in result
+        assert result["response_format"]["json_schema"]["schema"] == schema
+
+
+class TestReasoningEffortThresholds:
+    """Tests for LiteLLM-aligned reasoning effort thresholds."""
+
+    def test_budget_minimal(self):
+        """Budget < 2000 should map to minimal."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 1000}}
+        assert resolve_reasoning_effort(body) == "minimal"
+
+    def test_budget_low(self):
+        """Budget 2000-5000 should map to low."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 3000}}
+        assert resolve_reasoning_effort(body) == "low"
+
+    def test_budget_medium_threshold(self):
+        """Budget 5000-10000 should map to medium."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 7000}}
+        assert resolve_reasoning_effort(body) == "medium"
+
+    def test_budget_high_threshold(self):
+        """Budget >= 10000 should map to high."""
+        from app.utils.message_converter import resolve_reasoning_effort
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 10000}}
+        assert resolve_reasoning_effort(body) == "high"
+
+    def test_reasoning_summary_detailed(self):
+        """Enabled thinking should default to detailed summary."""
+        from app.utils.message_converter import resolve_reasoning_summary
+
+        body = {"thinking": {"type": "enabled", "budget_tokens": 5000}}
+        assert resolve_reasoning_summary(body) == "detailed"
+
+    def test_reasoning_summary_explicit(self):
+        """Explicit summary should be preserved."""
+        from app.utils.message_converter import resolve_reasoning_summary
+
+        body = {"thinking": {"type": "enabled", "summary": "auto"}}
+        assert resolve_reasoning_summary(body) == "auto"

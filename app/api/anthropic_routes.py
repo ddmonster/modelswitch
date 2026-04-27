@@ -61,7 +61,8 @@ async def messages(request: Request):
     preserve_thinking_blocks = thinking_enabled
 
     # 将 Anthropic 请求转换为 OpenAI 格式
-    openai_body = anthropic_to_openai_messages(body, preserve_thinking_blocks=preserve_thinking_blocks)
+    # Returns tuple: (openai_request, tool_name_mapping)
+    openai_body, tool_name_mapping = anthropic_to_openai_messages(body, preserve_thinking_blocks=preserve_thinking_blocks)
     messages_list = openai_body.pop("messages", [])
 
     # Log converted OpenAI request for debug
@@ -86,6 +87,7 @@ async def messages(request: Request):
             thinking_enabled=thinking_enabled,
             preserve_thinking_blocks=preserve_thinking_blocks,
             proto_logger=proto_logger,
+            tool_name_mapping=tool_name_mapping,
         )
     else:
         return await _handle_non_stream(
@@ -98,6 +100,7 @@ async def messages(request: Request):
             thinking_enabled=thinking_enabled,
             preserve_thinking_blocks=preserve_thinking_blocks,
             proto_logger=proto_logger,
+            tool_name_mapping=tool_name_mapping,
         )
 
 
@@ -111,6 +114,7 @@ async def _handle_non_stream(
     thinking_enabled=False,
     preserve_thinking_blocks=False,
     proto_logger=None,
+    tool_name_mapping=None,
 ):
     """处理非流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -151,7 +155,8 @@ async def _handle_non_stream(
 
     # C2/C3 fix: 传入 thinking_enabled 和 preserve_thinking_blocks
     anthropic_response = convert_openai_to_anthropic_response(
-        resp_data, model, thinking_enabled=thinking_enabled, preserve_thinking_blocks=preserve_thinking_blocks
+        resp_data, model, thinking_enabled=thinking_enabled, preserve_thinking_blocks=preserve_thinking_blocks,
+        tool_name_mapping=tool_name_mapping,
     )
 
     # Debug: Log Anthropic response sent to client
@@ -178,6 +183,7 @@ async def _handle_stream(
     thinking_enabled=False,
     preserve_thinking_blocks=False,
     proto_logger=None,
+    tool_name_mapping=None,
 ):
     """处理流式 Anthropic 请求"""
     result = await chain_router.execute_chat(
@@ -242,6 +248,7 @@ async def _handle_stream(
                 request_id,
                 thinking_enabled=thinking_enabled,
                 preserve_thinking_blocks=preserve_thinking_blocks,
+                tool_name_mapping=tool_name_mapping,
             ):
                 yield anth_chunk
 

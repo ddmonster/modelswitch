@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -9,10 +10,74 @@ from typing import Any, AsyncGenerator
 
 logger = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
+
+# OpenAI has a 64-character limit for function/tool names
+# Anthropic does not have this limit, so we need to truncate long names
+OPENAI_MAX_TOOL_NAME_LENGTH = 64
+TOOL_NAME_HASH_LENGTH = 8
+TOOL_NAME_PREFIX_LENGTH = OPENAI_MAX_TOOL_NAME_LENGTH - TOOL_NAME_HASH_LENGTH - 1  # 55
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Safe Parsing Helpers
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def truncate_tool_name(name: str) -> str:
+    """
+    Truncate tool names that exceed OpenAI's 64-character limit.
+
+    Uses format: {55-char-prefix}_{8-char-hash} to avoid collisions
+    when multiple tools have similar long names.
+
+    Args:
+        name: The original tool name
+
+    Returns:
+        The original name if <= 64 chars, otherwise truncated with hash
+    """
+    if len(name) <= OPENAI_MAX_TOOL_NAME_LENGTH:
+        return name
+
+    # Create deterministic hash from full name to avoid collisions
+    name_hash = hashlib.sha256(name.encode()).hexdigest()[:TOOL_NAME_HASH_LENGTH]
+    return f"{name[:TOOL_NAME_PREFIX_LENGTH]}_{name_hash}"
+
+
+def create_tool_name_mapping(tools: list[dict]) -> dict[str, str]:
+    """
+    Create a mapping of truncated tool names to original names.
+
+    Args:
+        tools: List of tool definitions with 'name' field
+
+    Returns:
+        Dict mapping truncated names to original names (only for truncated tools)
+    """
+    mapping: dict[str, str] = {}
+    for tool in tools:
+        original_name = tool.get("name", "")
+        truncated_name = truncate_tool_name(original_name)
+        if truncated_name != original_name:
+            mapping[truncated_name] = original_name
+    return mapping
+
+
+def restore_tool_name(name: str, mapping: dict[str, str]) -> str:
+    """
+    Restore original tool name from truncated name using mapping.
+
+    Args:
+        name: The potentially truncated tool name
+        mapping: Dict of truncated -> original names
+
+    Returns:
+        Original name if in mapping, otherwise the input name
+    """
+    return mapping.get(name, name)
 
 
 def _safe_json_parse(json_str: str, default: Any, context: str = "") -> Any:
@@ -107,8 +172,9 @@ def resolve_reasoning_effort(body: dict) -> str | None:
        `low`/`medium`/`high` map 1:1; `max` maps to `xhigh`
        (supported by mainstream GPT models). Unknown values are ignored.
     2. Fallback: `thinking.type` + `budget_tokens`:
-       - `adaptive` → `high` (mirrors optimizer semantics where adaptive ≈ max effort)
-       - `enabled` with budget → `low` (<4,000) / `medium` (4,000–15,999) / `high` (≥16,000)
+       - `adaptive` → `medium` (OpenAI default for adaptive reasoning)
+       - `enabled` with budget → thresholds aligned with LiteLLM standard:
+         >= 10000 → `high`, >= 5000 → `medium`, >= 2000 → `low`, < 2000 → `minimal`
        - `enabled` without budget → `high` (conservative default)
        - `disabled` / absent → `None`
 
@@ -116,7 +182,7 @@ def resolve_reasoning_effort(body: dict) -> str | None:
         body: Anthropic request body dict
 
     Returns:
-        One of "low", "medium", "high", "xhigh", or None
+        One of "minimal", "low", "medium", "high", "xhigh", or None
     """
     # Priority 1: explicit output_config.effort
     output_config = body.get("output_config", {})
@@ -135,19 +201,51 @@ def resolve_reasoning_effort(body: dict) -> str | None:
 
     thinking_type = thinking.get("type")
     if thinking_type == "adaptive":
-        return "high"
+        # Use output_config.effort if available, otherwise default to medium
+        if isinstance(output_config, dict) and output_config.get("effort"):
+            return output_config["effort"]
+        return "medium"
     if thinking_type == "enabled":
         budget = thinking.get("budget_tokens")
         if budget is None:
             return "high"  # enabled but no budget — assume strong reasoning
         budget = int(budget)
-        if budget < 4000:
-            return "low"
-        elif budget < 16000:
+        # LiteLLM-aligned thresholds:
+        # >= 10000 -> high, >= 5000 -> medium, >= 2000 -> low, < 2000 -> minimal
+        if budget >= 10000:
+            return "high"
+        elif budget >= 5000:
             return "medium"
-        return "high"
+        elif budget >= 2000:
+            return "low"
+        else:
+            return "minimal"
 
     # disabled or unknown
+    return None
+
+
+def resolve_reasoning_summary(body: dict) -> str | None:
+    """Resolve the reasoning summary setting from Anthropic request body.
+
+    Args:
+        body: Anthropic request body dict
+
+    Returns:
+        One of "detailed", "auto", "concise", or None
+    """
+    thinking = body.get("thinking")
+    if not thinking or not isinstance(thinking, dict):
+        return None
+
+    summary = thinking.get("summary")
+    if summary:
+        return summary
+
+    # Default to "detailed" for enabled thinking (matches LiteLLM behavior)
+    if thinking.get("type") == "enabled":
+        return "detailed"
+
     return None
 
 
@@ -184,7 +282,7 @@ def clean_json_schema(schema: dict) -> dict:
 def anthropic_to_openai_messages(
     data: dict,
     preserve_thinking_blocks: bool = False,
-) -> dict:
+) -> tuple[dict, dict[str, str]]:
     """将 Anthropic Messages API 请求体转换为 OpenAI 格式
 
     Args:
@@ -192,12 +290,18 @@ def anthropic_to_openai_messages(
         preserve_thinking_blocks: If True, preserve thinking blocks as separate
             reasoning_content instead of merging into text. Derived from thinking.type==enabled.
 
+    Returns:
+        Tuple of (OpenAI request dict, tool_name_mapping for restoring truncated names)
+
     Features:
     - Preserves cache_control markers for prompt caching
     - Handles o-series models (uses max_completion_tokens)
-    - Maps thinking parameters to reasoning_effort with priority-based resolution
+    - Maps thinking parameters to reasoning_effort with LiteLLM-aligned thresholds
     - Filters BatchTool (Anthropic internal tool type)
     - Cleans JSON schema (removes unsupported formats like uri)
+    - Truncates tool names exceeding OpenAI's 64-char limit
+    - Maps metadata.user_id to user field (truncated to 64 chars)
+    - Handles output_format/output_config for structured outputs
     """
     messages = []
     model = data.get("model", "")
@@ -207,8 +311,8 @@ def anthropic_to_openai_messages(
     if system:
         messages.extend(_convert_system_block(system))
 
-    # Tools conversion
-    openai_tools = _convert_tools_block(data.get("tools"))
+    # Tools conversion (returns tuple: tools, name_mapping)
+    openai_tools, tool_name_mapping = _convert_tools_block(data.get("tools"))
 
     # Tool_choice conversion
     openai_tool_choice = _convert_tool_choice(data.get("tool_choice"))
@@ -247,7 +351,10 @@ def anthropic_to_openai_messages(
             f"has_reasoning_content={bool(msg.get('reasoning_content'))}"
         )
 
-    return _build_openai_request_dict(data, model, messages, openai_tools, openai_tool_choice)
+    openai_request = _build_openai_request_dict(
+        data, model, messages, openai_tools, openai_tool_choice
+    )
+    return openai_request, tool_name_mapping
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -288,21 +395,24 @@ def _convert_system_block(system: str | list) -> list[dict]:
     return messages
 
 
-def _convert_tools_block(tools: list) -> list[dict] | None:
+def _convert_tools_block(tools: list) -> tuple[list[dict] | None, dict[str, str]]:
     """Convert Anthropic tools to OpenAI function format.
 
     Filters BatchTool (Anthropic internal tool type) and preserves cache_control.
+    Truncates tool names exceeding OpenAI's 64-character limit.
 
     Args:
         tools: Anthropic tools list
 
     Returns:
-        OpenAI tools list or None if empty
+        Tuple of (OpenAI tools list or None if empty, tool_name_mapping for truncated names)
     """
     if not tools:
-        return None
+        return None, {}
 
     openai_tools = []
+    tool_name_mapping: dict[str, str] = {}
+
     for tool in tools:
         if not isinstance(tool, dict):
             logger.warning(f"Invalid tool type: {type(tool).__name__}, expected dict")
@@ -313,15 +423,21 @@ def _convert_tools_block(tools: list) -> list[dict] | None:
             continue
 
         # Validate required 'name' field
-        tool_name = tool.get("name")
-        if not tool_name:
+        original_name = tool.get("name")
+        if not original_name:
             logger.warning(f"Tool missing required 'name' field, skipping")
             continue
+
+        # Truncate name if exceeds OpenAI's 64-char limit
+        truncated_name = truncate_tool_name(original_name)
+        if truncated_name != original_name:
+            tool_name_mapping[truncated_name] = original_name
+            logger.debug(f"Tool name truncated: '{original_name}' -> '{truncated_name}'")
 
         openai_tool = {
             "type": "function",
             "function": {
-                "name": tool_name,
+                "name": truncated_name,
                 "description": tool.get("description", ""),
                 "parameters": clean_json_schema(tool.get("input_schema", {})),
             },
@@ -331,7 +447,7 @@ def _convert_tools_block(tools: list) -> list[dict] | None:
             openai_tool["cache_control"] = tool["cache_control"]
         openai_tools.append(openai_tool)
 
-    return openai_tools if openai_tools else None
+    return (openai_tools if openai_tools else None), tool_name_mapping
 
 
 def _convert_tool_choice(tool_choice: dict | str) -> dict | str | None:
@@ -620,14 +736,17 @@ def _build_openai_request_dict(
 
     Returns:
         OpenAI request dict
+
+    Note: The following Anthropic parameters are intentionally NOT mapped:
+        - top_k: Not supported by OpenAI or most compatible providers
+        - stop_sequences: Mapped to 'stop' (OpenAI equivalent)
+        - speed: Not supported by OpenAI Chat Completions API
     """
     result = {
         "model": model,
         "messages": messages,
         "temperature": data.get("temperature"),
         "top_p": data.get("top_p"),
-        # Note: top_k is NOT passed through - not supported by OpenAI or most OpenAI-compatible providers
-        # Anthropic-only parameter that would cause errors if sent upstream
         "stream": data.get("stream", False),
         "stop": data.get("stop_sequences"),
         "tools": openai_tools,
@@ -647,6 +766,10 @@ def _build_openai_request_dict(
         effort = resolve_reasoning_effort(data)
         if effort:
             result["reasoning_effort"] = effort
+        # Add reasoning summary if specified (for models that support it)
+        summary = resolve_reasoning_summary(data)
+        if summary:
+            result["reasoning_summary"] = summary
     else:
         # Backward compatible: simple mapping for non-reasoning models
         thinking = data.get("thinking")
@@ -662,6 +785,31 @@ def _build_openai_request_dict(
         else:
             result["max_tokens"] = budget
 
+    # Map metadata.user_id → user field (truncated to 64 chars per Anthropic spec)
+    metadata = data.get("metadata")
+    if isinstance(metadata, dict) and "user_id" in metadata:
+        result["user"] = str(metadata["user_id"])[:64]
+
+    # Handle output_format / output_config.format for structured outputs
+    # Anthropic: output_format: {"type": "json_schema", "schema": {...}}
+    # Anthropic: output_config: {"format": {"type": "json_schema", "schema": {...}}}
+    # OpenAI: response_format: {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}, "strict": true}}
+    output_format: Any = data.get("output_format")
+    output_config = data.get("output_config")
+    if not isinstance(output_format, dict) and isinstance(output_config, dict):
+        output_format = output_config.get("format")
+    if isinstance(output_format, dict) and output_format.get("type") == "json_schema":
+        schema = output_format.get("schema")
+        if schema:
+            result["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "schema": schema,
+                    "strict": True,
+                }
+            }
+
     return result
 
 
@@ -670,6 +818,7 @@ def convert_openai_to_anthropic_response(
     model: str,
     thinking_enabled: bool = False,
     preserve_thinking_blocks: bool = False,
+    tool_name_mapping: dict[str, str] | None = None,
 ) -> dict:
     """将 OpenAI ChatCompletion 响应转换为 Anthropic Messages 响应。
 
@@ -679,12 +828,16 @@ def convert_openai_to_anthropic_response(
         thinking_enabled: 客户端是否请求了 thinking（决定是否生成 thinking 块）
         preserve_thinking_blocks: If True, preserve reasoning_content as separate thinking
             block instead of merging into text.
+        tool_name_mapping: Mapping of truncated tool names to original names.
+                          Used to restore original names for tools that exceeded
+                          OpenAI's 64-char limit.
 
     Features:
     - Handles refusal blocks (both content parts and message-level)
     - Maps content_filter finish_reason to end_turn
     - Maps cache token fields from OpenAI format to Anthropic format
     - Handles legacy function_call format
+    - Restores truncated tool names using tool_name_mapping
     """
     choices = resp_data.get("choices", [])
     content = []
@@ -786,11 +939,14 @@ def convert_openai_to_anthropic_response(
                     default={},
                     context="tool_call arguments"
                 )
+                # Restore original tool name if it was truncated
+                tc_name = tc_func.get("name", "")
+                original_name = restore_tool_name(tc_name, tool_name_mapping or {})
                 content.append(
                     {
                         "type": "tool_use",
                         "id": tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}"),
-                        "name": tc_func.get("name", ""),
+                        "name": original_name,
                         "input": tc_input,
                     }
                 )
@@ -800,6 +956,8 @@ def convert_openai_to_anthropic_response(
             function_call = message.get("function_call")
             if function_call:
                 fc_name = function_call.get("name", "")
+                # Restore original tool name if it was truncated
+                original_name = restore_tool_name(fc_name, tool_name_mapping or {})
                 fc_args = function_call.get("arguments")
                 fc_id = function_call.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
                 if fc_name or fc_args:
@@ -819,7 +977,7 @@ def convert_openai_to_anthropic_response(
                         {
                             "type": "tool_use",
                             "id": fc_id,
-                            "name": fc_name,
+                            "name": original_name,
                             "input": fc_input,
                         }
                     )
@@ -906,6 +1064,7 @@ async def openai_stream_to_anthropic(
     request_id: str = "",
     thinking_enabled: bool = False,
     preserve_thinking_blocks: bool = False,
+    tool_name_mapping: dict[str, str] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """将 OpenAI 格式的 SSE 流实时转换为 Anthropic 格式。
 
@@ -917,6 +1076,9 @@ async def openai_stream_to_anthropic(
             False 时，reasoning_content 会被合并到 text 块中，不生成 thinking 块。
         preserve_thinking_blocks: If True, preserve reasoning_content as separate thinking
             block instead of merging into text.
+        tool_name_mapping: Mapping of truncated tool names to original names.
+                          Used to restore original names for tools that exceeded
+                          OpenAI's 64-char limit.
 
     状态机: message_start -> [content_block_start -> delta* -> stop]* -> message_delta -> message_stop
 
@@ -1038,10 +1200,12 @@ async def openai_stream_to_anthropic(
                         tc_id = tc_delta.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
                         func = tc_delta.get("function", {})
                         tc_name = func.get("name", "")
+                        # Restore original tool name if it was truncated
+                        original_name = restore_tool_name(tc_name, tool_name_mapping or {})
 
                         tool_calls_map[tc_index] = {
                             "id": tc_id,
-                            "name": tc_name,
+                            "name": original_name,
                             "block_index": block_idx,
                         }
                         open_block_index = block_idx
@@ -1054,7 +1218,7 @@ async def openai_stream_to_anthropic(
                                 "content_block": {
                                     "type": "tool_use",
                                     "id": tc_id,
-                                    "name": tc_name,
+                                    "name": original_name,
                                     "input": {},
                                 },
                             },
