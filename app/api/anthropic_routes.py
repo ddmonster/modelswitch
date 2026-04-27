@@ -56,9 +56,28 @@ async def messages(request: Request):
     thinking = body.get("thinking")
     thinking_enabled = isinstance(thinking, dict) and thinking.get("type") == "enabled"
 
-    # NEW: preserve_thinking_blocks - preserve thinking blocks as separate content
-    # when client explicitly requests thinking
-    preserve_thinking_blocks = thinking_enabled
+    # Claude Code 2.x compatibility: Auto-detect thinking blocks in assistant messages
+    # Even if client doesn't request thinking, conversation history may contain thinking blocks
+    # We need to preserve these as reasoning_content for proper handling
+    def _has_thinking_blocks_in_messages(messages: list) -> bool:
+        """Check if any assistant message contains thinking blocks."""
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "thinking":
+                            return True
+        return False
+
+    has_thinking_in_history = _has_thinking_blocks_in_messages(body.get("messages", []))
+
+    # preserve_thinking_blocks - preserve thinking blocks as separate content
+    # True when: 1) client explicitly requests thinking, OR 2) history contains thinking blocks
+    preserve_thinking_blocks = thinking_enabled or has_thinking_in_history
+
+    if has_thinking_in_history and not thinking_enabled:
+        logger.debug(f"[{request_id}] Auto-preserving thinking blocks found in conversation history")
 
     # 将 Anthropic 请求转换为 OpenAI 格式
     # Returns tuple: (openai_request, tool_name_mapping)
