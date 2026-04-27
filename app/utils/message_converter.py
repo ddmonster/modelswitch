@@ -496,9 +496,15 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
 
     Returns:
         Tuple of (converted_messages, tool_result_messages)
+
+    Note: Claude Code 2.x may send tool_use blocks in user messages in certain
+    agent scenarios. We handle this by creating separate assistant messages
+    with tool_calls for these blocks, maintaining conversation flow.
     """
     converted = []
     tool_results = []
+    # Track tool_use blocks that appear in user messages (Claude Code 2.x edge case)
+    user_tool_use_blocks = []
 
     if isinstance(content, str):
         converted.append({"role": "user", "content": content})
@@ -555,6 +561,15 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
                     "tool_call_id": tool_use_id,
                     "content": str(result_content) if result_content else "",
                 })
+            elif block.get("type") == "tool_use":
+                # Claude Code 2.x edge case: tool_use in user message
+                # This can happen in agent workflows where Claude acts as both user and assistant
+                # We collect these and will create assistant messages with tool_calls
+                logger.debug(f"[user] Found tool_use block in user message (Claude Code 2.x edge case)")
+                user_tool_use_blocks.append(block)
+            else:
+                # Log unexpected block types for debugging
+                logger.debug(f"[user] Unrecognized block type '{block.get('type')}' in user content")
 
         # Simplify: if only single text block (no images), use string content
         # Some OpenAI-compatible providers (GLM/BigModel) don't support array content
@@ -578,6 +593,43 @@ def _convert_user_content(content: str | list) -> tuple[list[dict], list[dict]]:
             else:
                 # Has images: use array content format (required for multi-modal)
                 converted = [{"role": "user", "content": converted}]
+
+    # Handle tool_use blocks that appeared in user messages (Claude Code 2.x edge case)
+    # In OpenAI format, tool calls belong to assistant messages, so we need to create
+    # synthetic assistant messages for these tool_use blocks
+    # This maintains conversation flow and ensures downstream providers can handle them
+    if user_tool_use_blocks:
+        tool_calls = []
+        for b in user_tool_use_blocks:
+            if not isinstance(b, dict):
+                logger.warning(f"Invalid tool_use block in user message: {type(b).__name__}")
+                continue
+
+            tool_id = b.get("id")
+            if not tool_id:
+                tool_id = f"toolu_{uuid.uuid4().hex[:24]}"
+                logger.debug(f"tool_use block in user message missing 'id', generated: {tool_id}")
+
+            tool_name = b.get("name", "")
+            tool_input = b.get("input", {})
+
+            tool_calls.append({
+                "id": tool_id,
+                "type": "function",
+                "function": {
+                    "name": tool_name,
+                    "arguments": json.dumps(tool_input, ensure_ascii=False),
+                },
+            })
+
+        if tool_calls:
+            # Create a synthetic assistant message with the tool calls
+            # This represents Claude acting as an agent making tool calls
+            assistant_msg = {"role": "assistant", "tool_calls": tool_calls, "content": None}
+            # Insert before the user message to maintain conversation flow:
+            # assistant (tool_calls) -> tool_result -> user (next message)
+            converted.insert(0, assistant_msg)
+            logger.debug(f"[Claude Code 2.x] Created synthetic assistant message with {len(tool_calls)} tool_calls")
 
     return converted, tool_results
 
@@ -628,8 +680,13 @@ def _convert_assistant_content(
         elif block_type == "tool_use":
             # Already collected above
             pass
+        elif block_type == "redacted_thinking":
+            # Handle redacted thinking blocks (Claude Code 2.x privacy feature)
+            # These contain thinking content that was redacted for privacy
+            logger.debug(f"[assistant] Found redacted_thinking block, skipping")
         else:
-            logger.warning(f"[assistant] Unexpected block type '{block_type}' in content list, skipping")
+            # Log unexpected block types but don't crash - handle gracefully
+            logger.debug(f"[assistant] Unexpected block type '{block_type}' in content list, skipping")
 
     # Debug log the conversion
     logger.debug(

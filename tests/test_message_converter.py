@@ -2151,3 +2151,201 @@ class TestReasoningEffortThresholds:
 
         body = {"thinking": {"type": "enabled", "summary": "auto"}}
         assert resolve_reasoning_summary(body) == "auto"
+
+
+class TestClaudeCode2xCompatibility:
+    """Tests for Claude Code 2.x edge case handling.
+
+    Claude Code 2.x uses structured content blocks + tool use by default.
+    This test class ensures modelswitch handles these cases properly without
+    breaking compatibility with older clients that send plain string content.
+    """
+
+    def test_assistant_mixed_text_and_tool_use(self):
+        """Claude Code 2.x sends assistant messages with text + tool_use mixed."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I'll check the repository"},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_123",
+                                "name": "bash",
+                                "input": {"cmd": "git log --oneline"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        # Should have single assistant message with content + tool_calls
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["content"] == "I'll check the repository"
+        assert len(msg["tool_calls"]) == 1
+        assert msg["tool_calls"][0]["function"]["name"] == "bash"
+
+    def test_assistant_only_tool_use(self):
+        """Claude Code 2.x may send assistant messages with only tool_use."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_abc",
+                                "name": "read_file",
+                                "input": {"path": "/src/main.py"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["content"] is None
+        assert len(msg["tool_calls"]) == 1
+
+    def test_user_message_with_tool_use_edge_case(self):
+        """Claude Code 2.x may send tool_use in user messages in agent workflows.
+
+        We handle this by creating a synthetic assistant message with tool_calls
+        to maintain proper conversation flow in OpenAI format.
+        """
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Please run this command"},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_xyz",
+                                "name": "bash",
+                                "input": {"cmd": "ls -la"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        # Should have synthetic assistant message with tool_calls + user message
+        assert len(result["messages"]) == 2
+        # First message: synthetic assistant with tool_calls
+        assert result["messages"][0]["role"] == "assistant"
+        assert result["messages"][0]["tool_calls"][0]["function"]["name"] == "bash"
+        # Second message: user with text
+        assert result["messages"][1]["role"] == "user"
+        assert result["messages"][1]["content"] == "Please run this command"
+
+    def test_full_tool_workflow_claude_code_2x(self):
+        """Full Claude Code 2.x workflow: assistant tool_use -> user tool_result."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Checking the git history"},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_001",
+                                "name": "bash",
+                                "input": {"cmd": "git log --oneline -10"},
+                            },
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": "toolu_001",
+                                "content": "abc123 First commit\ndef456 Second commit",
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
+        # Message 0: assistant with content + tool_calls
+        assert result["messages"][0]["role"] == "assistant"
+        assert result["messages"][0]["content"] == "Checking the git history"
+        assert len(result["messages"][0]["tool_calls"]) == 1
+        # Message 1: tool result
+        assert result["messages"][1]["role"] == "tool"
+        assert result["messages"][1]["tool_call_id"] == "toolu_001"
+
+    def test_backward_compatible_plain_string_content(self):
+        """Older clients sending plain string content should still work."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {"role": "user", "content": "Hello, how are you?"},
+                    {"role": "assistant", "content": "I'm doing well!"},
+                ],
+            }
+        )
+        # Should work exactly as before
+        assert result["messages"][0] == {"role": "user", "content": "Hello, how are you?"}
+        assert result["messages"][1] == {"role": "assistant", "content": "I'm doing well!"}
+
+    def test_assistant_with_redacted_thinking(self):
+        """Claude Code 2.x may include redacted_thinking blocks."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "redacted_thinking", "thinking": "[REDACTED]"},
+                            {"type": "text", "text": "Here's my answer"},
+                        ],
+                    }
+                ],
+            }
+        )
+        # redacted_thinking should be skipped, only text preserved
+        msg = result["messages"][0]
+        assert msg["role"] == "assistant"
+        assert msg["content"] == "Here's my answer"
+        assert "tool_calls" not in msg
+
+    def test_multiple_tool_use_blocks_in_assistant(self):
+        """Claude Code 2.x may call multiple tools in one message."""
+        result, _ = anthropic_to_openai_messages(
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I'll run both commands"},
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_1",
+                                "name": "bash",
+                                "input": {"cmd": "git status"},
+                            },
+                            {
+                                "type": "tool_use",
+                                "id": "toolu_2",
+                                "name": "read_file",
+                                "input": {"path": "README.md"},
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+        msg = result["messages"][0]
+        assert msg["content"] == "I'll run both commands"
+        assert len(msg["tool_calls"]) == 2
+        assert msg["tool_calls"][0]["function"]["name"] == "bash"
+        assert msg["tool_calls"][1]["function"]["name"] == "read_file"
